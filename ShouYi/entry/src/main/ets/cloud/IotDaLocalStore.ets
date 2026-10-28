@@ -31,7 +31,13 @@ export class IotDaLocalStore {
 
   private static readonly MAX_ALERTS: number = 100;
   private static readonly MAX_LOGS: number = 200;
-  private static readonly MAX_DAILY: number = 30;
+  /**
+   * 日汇总保留天数。
+   *
+   * 30 天只够画月报，画不出「较上月下降 X%」—— 那需要前后两个 30 天窗口。
+   * 60 天正好覆盖「本期 30 + 上期 30」，报告里的同比才有意义。
+   */
+  private static readonly MAX_DAILY: number = 60;
   private static readonly MAX_HOURLY_DAYS: number = 14;
 
   /** 应用沙箱目录，由 init() 注入；未注入时所有操作静默跳过 */
@@ -349,6 +355,145 @@ export class IotDaLocalStore {
     }
     cell.count = cell.count + 1;
     this.writeArray<HeatmapCell>('iotda_hourly.json', hourly);
+  }
+
+  // ==================== 演示数据合并 ====================
+  //
+  // 这一组方法的共同约定：**已存在的数据一律保留**，只补缺口。
+  // 演示数据是给真实数据垫底的，不是来抢位置的 —— 否则用户跑了三天
+  // 的真实活动，被一段演示数据覆盖掉，那就成了数据事故。
+
+  /**
+   * 合并日汇总。按 date 去重，已有的日期跳过。
+   * @return 实际新增的天数
+   */
+  mergeDaily(list: ActivityDaily[]): number {
+    const cur: ActivityDaily[] = this.loadDaily();
+    const byDate: Map<string, ActivityDaily> = new Map<string, ActivityDaily>();
+    for (const d of cur) {
+      byDate.set(d.date, d);
+    }
+    let added: number = 0;
+    for (const d of list) {
+      if (byDate.has(d.date)) {
+        continue;
+      }
+      byDate.set(d.date, d);
+      added = added + 1;
+    }
+    if (added === 0) {
+      return 0;
+    }
+    const merged: ActivityDaily[] = [];
+    byDate.forEach((v: ActivityDaily) => {
+      merged.push(v);
+    });
+    merged.sort((a: ActivityDaily, b: ActivityDaily) => a.date < b.date ? -1 : 1);
+    const capped: ActivityDaily[] = merged.slice(Math.max(0, merged.length - IotDaLocalStore.MAX_DAILY));
+    this.writeArray<ActivityDaily>('iotda_daily.json', capped);
+    Logger.info(IotDaLocalStore.MODULE, `合并日汇总：新增 ${added} 天，共 ${capped.length} 天`);
+    return added;
+  }
+
+  /**
+   * 合并小时计数。按 date+hour 去重，已有的格子跳过。
+   * @return 实际新增的格子数
+   */
+  mergeHourly(list: HeatmapCell[]): number {
+    const cur: HeatmapCell[] = this.loadHourly();
+    const byKey: Map<string, HeatmapCell> = new Map<string, HeatmapCell>();
+    for (const c of cur) {
+      byKey.set(`${c.date}#${c.hour}`, c);
+    }
+    let added: number = 0;
+    for (const c of list) {
+      const k: string = `${c.date}#${c.hour}`;
+      if (byKey.has(k)) {
+        continue;
+      }
+      byKey.set(k, c);
+      added = added + 1;
+    }
+    if (added === 0) {
+      return 0;
+    }
+    const merged: HeatmapCell[] = [];
+    byKey.forEach((v: HeatmapCell) => {
+      merged.push(v);
+    });
+    merged.sort((a: HeatmapCell, b: HeatmapCell) => {
+      if (a.date !== b.date) {
+        return a.date < b.date ? -1 : 1;
+      }
+      return a.hour - b.hour;
+    });
+    this.writeArray<HeatmapCell>('iotda_hourly.json', merged);
+    Logger.info(IotDaLocalStore.MODULE, `合并小时计数：新增 ${added} 格，共 ${merged.length} 格`);
+    return added;
+  }
+
+  /**
+   * 合并告警。按 alertId 去重，已有的告警跳过（真实告警优先）。
+   * @return 实际新增的条数
+   */
+  mergeAlerts(list: Alert[]): number {
+    const cur: Alert[] = this.loadAlerts();
+    const byId: Map<string, Alert> = new Map<string, Alert>();
+    for (const a of cur) {
+      byId.set(a.alertId, a);
+    }
+    let added: number = 0;
+    for (const a of list) {
+      if (byId.has(a.alertId)) {
+        continue;
+      }
+      byId.set(a.alertId, a);
+      added = added + 1;
+    }
+    if (added === 0) {
+      return 0;
+    }
+    const merged: Alert[] = [];
+    byId.forEach((v: Alert) => {
+      merged.push(v);
+    });
+    merged.sort((a: Alert, b: Alert) => b.timestamp - a.timestamp);
+    const capped: Alert[] = merged.slice(0, IotDaLocalStore.MAX_ALERTS);
+    this.writeArray<Alert>('iotda_alerts.json', capped);
+    Logger.info(IotDaLocalStore.MODULE, `合并告警：新增 ${added} 条，共 ${capped.length} 条`);
+    return added;
+  }
+
+  /**
+   * 合并安全日志。按 logId 去重。
+   * @return 实际新增的条数
+   */
+  mergeLogs(list: SafetyLogEntry[]): number {
+    const cur: SafetyLogEntry[] = this.loadLogs();
+    const byId: Map<string, SafetyLogEntry> = new Map<string, SafetyLogEntry>();
+    for (const l of cur) {
+      byId.set(l.logId, l);
+    }
+    let added: number = 0;
+    for (const l of list) {
+      if (byId.has(l.logId)) {
+        continue;
+      }
+      byId.set(l.logId, l);
+      added = added + 1;
+    }
+    if (added === 0) {
+      return 0;
+    }
+    const merged: SafetyLogEntry[] = [];
+    byId.forEach((v: SafetyLogEntry) => {
+      merged.push(v);
+    });
+    merged.sort((a: SafetyLogEntry, b: SafetyLogEntry) => b.triggeredAt - a.triggeredAt);
+    const capped: SafetyLogEntry[] = merged.slice(0, IotDaLocalStore.MAX_LOGS);
+    this.writeArray<SafetyLogEntry>('iotda_logs.json', capped);
+    Logger.info(IotDaLocalStore.MODULE, `合并安全日志：新增 ${added} 条，共 ${capped.length} 条`);
+    return added;
   }
 
   // ==================== 家庭成员 ====================

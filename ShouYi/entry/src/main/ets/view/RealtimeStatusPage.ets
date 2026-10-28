@@ -11,6 +11,7 @@ import {
 import { DateUtil } from '../common/utils/DateUtil';
 import { Logger } from '../common/utils/Logger';
 
+import { ThemeMode, ThemeStore } from '../common/theme/ThemeStore';
 /** 时间范围下拉项。Select 需要显式类型，ArkTS 不接受无类型对象字面量 */
 class SelectOption {
   value: string = '';
@@ -46,6 +47,13 @@ class SensorRowVM {
   icon: string = '';
   data: string = '';
   insight: string = '';
+  /**
+   * 是否可点进详情页。
+   *
+   * 电量不给入口：它是设备属性而不是监测项，云端也没有电量历史读数，
+   * 点进去只能看到一条全零的假曲线 —— 那比不给入口更伤可信度。
+   */
+  clickable: boolean = true;
 }
 
 /** 置顶求助按钮卡的展示模型。理由同 SensorRowVM */
@@ -72,6 +80,19 @@ class AlertDetailParams {
 }
 
 /**
+ * 跳转传感器详情页的传参。
+ * 必须与 pages/SensorDetail.ets 里的接收端同名同字段 ——
+ * router 传参是运行时按字段名取的，两边不一致时页面会静默拿到空值。
+ */
+class SensorDetailParams {
+  sensorType: string = '';
+
+  constructor(sensorType: string) {
+    this.sensorType = sensorType;
+  }
+}
+
+/**
  * 实时状态页。
  *
  * 比首页更细：逐个传感器给当前值、关键时间点，以及一句文字解读。
@@ -90,6 +111,13 @@ class AlertDetailParams {
  */
 @Component
 export struct RealtimeStatusPage {
+
+  /**
+   * 订阅显示设置。@StorageProp 会在主题 / 关怀模式变化时触发本组件重渲染，
+   * 这样 ThemeStore 一改，AppColor / AppSize 的 getter 重新取值，全页同步换肤。
+   */
+  @StorageProp('displayMode') displayMode: string = 'day';
+  @StorageProp('careMode') careMode: boolean = false;
   private static readonly MODULE: string = 'RealtimeStatusPage';
 
   /**
@@ -138,6 +166,8 @@ export struct RealtimeStatusPage {
   @State refreshing: boolean = false;
   /** 演示场景切换通知：与首页一致，收到变化就重新拉取 */
   @StorageLink('demoScenarioTick') @Watch('onDemoScenarioTick') demoTick: number = 0;
+  /** 页签切换广播：Tabs 缓存页签，aboutToAppear 只跑一次，回本页要重新拉数据 */
+  @StorageLink('alertRefreshTick') @Watch('onAlertRefreshTick') alertTick: number = 0;
 
   private service: CareService = new CareService();
 
@@ -156,6 +186,10 @@ export struct RealtimeStatusPage {
   ];
 
   onDemoScenarioTick(): void {
+    this.load();
+  }
+
+  onAlertRefreshTick(): void {
     this.load();
   }
 
@@ -395,6 +429,26 @@ export struct RealtimeStatusPage {
     return Number.isInteger(v) ? `${v}` : `${Math.round(v * 10) / 10}`;
   }
 
+  /**
+   * 打开某个传感器的详情页。
+   *
+   * 实时状态页给的是「此刻是什么」，详情页给的是「最近一直是怎样」。
+   * 家属看到温湿度 31.8℃ 时真正想问的是"这几天都这么热吗"，
+   * 光看一个当前值回答不了，所以每张卡片都要能点进去看趋势。
+   */
+  private openSensorDetail(sensorType: string): void {
+    if (sensorType.length === 0) {
+      return;
+    }
+    const params: SensorDetailParams = new SensorDetailParams(sensorType);
+    this.getUIContext().getRouter().pushUrl({
+      url: 'pages/SensorDetail',
+      params: params
+    }).catch((e: Error) => {
+      Logger.warn(RealtimeStatusPage.MODULE, `跳转传感器详情失败: ${e.message}`);
+    });
+  }
+
   /** 打开某条告警的完整详情页（时间线 + 处置） */
   private openAlertDetail(alert: Alert): void {
     this.alertPopup = undefined;
@@ -426,6 +480,7 @@ export struct RealtimeStatusPage {
     vm.icon = this.iconOf(sensor.sensorType);
     vm.data = this.dataText(sensor);
     vm.insight = this.insightText(sensor);
+    vm.clickable = sensor.sensorType !== SensorType.BATTERY;
     return vm;
   }
 
@@ -754,7 +809,7 @@ export struct RealtimeStatusPage {
             .layoutWeight(1)
           Text(AlertLevel.labelOf(alert.level))
             .fontSize(10)
-            .fontColor(AppColor.CARD)
+            .fontColor(AppColor.ON_PRIMARY)
             .backgroundColor(AppColor.levelColor(alert.level))
             .padding({ left: 6, right: 6, top: 2, bottom: 2 })
             .borderRadius(4)
@@ -783,7 +838,7 @@ export struct RealtimeStatusPage {
 
           Text('查看详情 ›')
             .fontSize(AppSize.CAPTION_FONT)
-            .fontColor(AppColor.CARD)
+            .fontColor(AppColor.ON_PRIMARY)
             .backgroundColor(AppColor.PRIMARY)
             .padding({ top: 10, bottom: 10 })
             .borderRadius(AppSize.SMALL_RADIUS)
@@ -903,260 +958,285 @@ export struct RealtimeStatusPage {
 
   // ==================== 界面 ====================
 
+  /**
+   * 主题签名：日间/夜间 × 关怀模式，四种组合各走一支。
+   *
+   * 每一支都调用同一个 @Builder pageRoot()。主题任一维度变化都会换分支，
+   * ArkUI 随之销毁旧子树、重建新子树 —— 这是必须的：
+   * AppColor / AppSize 是静态 getter，ArkTS 追踪不到它们内部读的 AppStorage，
+   * 所以「没有依赖被追踪状态」的属性表达式切主题时不会重新求值。
+   * 只有整棵子树重建，静态 getter 才会拿到新值。
+   */
+
   build() {
-    Stack() {
-      // ---------- 页面主体 ----------
-      Column() {
-        Row() {
-          Text('实时状态')
-            .fontSize(AppSize.TITLE_FONT)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(AppColor.TEXT)
-            .layoutWeight(1)
-          Text(this.refreshing ? '刷新中…' : '下拉刷新')
-            .fontSize(AppSize.SMALL_FONT)
-            .fontColor(this.refreshing ? AppColor.PRIMARY : AppColor.TEXT_3)
-            .onClick(() => {
-              if (this.refreshing) {
-                return;
-              }
-              this.refreshWithDemo();
-            })
-        }
-        .width('100%')
-        .padding(AppSize.PAGE_PADDING)
+    if (this.displayMode === ThemeMode.NIGHT && this.careMode) {
+      this.pageRoot();
+    } else if (this.displayMode === ThemeMode.NIGHT) {
+      this.pageRoot();
+    } else if (this.careMode) {
+      this.pageRoot();
+    } else {
+      this.pageRoot();
+    }
+  }
 
-        // 手势下拉刷新：在内容区按住往下拉，松手重新拉取。
-        // refreshing 用 $$ 双向绑定给 Refresh；load() 的 finally 里置回 false。
-        Refresh({ refreshing: $$this.refreshing }) {
-          Scroll() {
-            Column() {
-              // ---------- 置顶：紧急求助按钮 ----------
-              if (this.sosVm !== undefined) {
-                this.sosCard(this.sosVm)
-              }
-
-            // ---------- 生命体征（看"人"） ----------
-            Text('生命体征')
-              .fontSize(AppSize.SUBTITLE_FONT)
+  @Builder
+  pageRoot() {
+      Stack() {
+        // ---------- 页面主体 ----------
+        Column() {
+          Row() {
+            Text('实时状态')
+              .fontSize(AppSize.TITLE_FONT)
               .fontWeight(FontWeight.Bold)
               .fontColor(AppColor.TEXT)
-              .width('100%')
-              .margin({ top: 4, bottom: 10 })
+              .layoutWeight(1)
+            Text(this.refreshing ? '刷新中…' : '下拉刷新')
+              .fontSize(AppSize.SMALL_FONT)
+              .fontColor(this.refreshing ? AppColor.ACCENT : AppColor.TEXT_3)
+              .onClick(() => {
+                if (this.refreshing) {
+                  return;
+                }
+                this.refreshWithDemo();
+              })
+          }
+          .width('100%')
+          .padding(AppSize.PAGE_PADDING)
 
-            if (this.vitalsCells.length > 0) {
-              this.vitalsBox()
-            }
+          // 手势下拉刷新：在内容区按住往下拉，松手重新拉取。
+          // refreshing 用 $$ 双向绑定给 Refresh；load() 的 finally 里置回 false。
+          Refresh({ refreshing: $$this.refreshing }) {
+            Scroll() {
+              Column() {
+                // ---------- 置顶：紧急求助按钮 ----------
+                if (this.sosVm !== undefined) {
+                  this.sosCard(this.sosVm)
+                }
 
-            // ---------- 环境与安全传感器（看"环境"） ----------
-            Text('环境与安全')
-              .fontSize(AppSize.SUBTITLE_FONT)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(AppColor.TEXT)
-              .width('100%')
-              .margin({ top: 8, bottom: 10 })
-
-            // key 含 data/insight：与四连格同理，否则节点复用后读数不刷新
-            ForEach(this.rows, (vm: SensorRowVM) => {
-              this.sensorRow(vm)
-            }, (vm: SensorRowVM) => `${vm.sensor.sensorId}_${vm.data}_${vm.insight}`)
-
-            // ---------- 历史监测数据（独立分区） ----------
-            // 与上方"传感器明细"分开起标题：上面看当下，下面看趋势，
-            // 两件事的信息密度差别很大，挤在一个卡片里会互相干扰。
-            Row() {
-              Text('历史监测数据')
+              // ---------- 生命体征（看"人"） ----------
+              Text('生命体征')
                 .fontSize(AppSize.SUBTITLE_FONT)
                 .fontWeight(FontWeight.Bold)
                 .fontColor(AppColor.TEXT)
-                .layoutWeight(1)
+                .width('100%')
+                .margin({ top: 4, bottom: 10 })
 
-              Select(this.rangeOptions())
-                .value(this.rangeKey)
-                .font({ size: AppSize.SMALL_FONT, weight: FontWeight.Normal })
-                .fontColor(AppColor.TEXT_3)
-                .selectedOptionFontColor(AppColor.PRIMARY)
-                .optionFont({ size: AppSize.SMALL_FONT })
-                .optionFontColor(AppColor.TEXT_2)
-                .onSelect((index: number) => {
-                  const r: string[] = RealtimeStatusPage.RANGES[index];
-                  if (r !== undefined && r[0] !== this.rangeKey) {
-                    this.rangeKey = r[0];
-                    this.load();
-                  }
-                })
-            }
-            .width('100%')
-            .alignItems(VerticalAlign.Center)
-            .margin({ top: 4, bottom: 10 })
-
-            Column() {
-              // 传感器类型切换
-              Row() {
-                this.typeChip(SensorType.PIR, '活动')
-                this.typeChip(SensorType.TEMP_HUMIDITY, '温度')
-                this.typeChip(SensorType.SMOKE, '烟雾')
-                this.typeChip(SensorType.GAS, '燃气')
+              if (this.vitalsCells.length > 0) {
+                this.vitalsBox()
               }
-              .width('100%')
-              .margin({ bottom: 12 })
 
-              // 统计条：最高 / 最低 / 平均 / 当前 —— 让曲线之外还有可读的硬指标
+              // ---------- 环境与安全传感器（看"环境"） ----------
+              Text('环境与安全')
+                .fontSize(AppSize.SUBTITLE_FONT)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(AppColor.TEXT)
+                .width('100%')
+                .margin({ top: 8, bottom: 10 })
+
+              // key 含 data/insight：与四连格同理，否则节点复用后读数不刷新
+              ForEach(this.rows, (vm: SensorRowVM) => {
+                this.sensorRow(vm)
+              }, (vm: SensorRowVM) => `${vm.sensor.sensorId}_${vm.data}_${vm.insight}`)
+
+              // ---------- 历史监测数据（独立分区） ----------
+              // 与上方"传感器明细"分开起标题：上面看当下，下面看趋势，
+              // 两件事的信息密度差别很大，挤在一个卡片里会互相干扰。
               Row() {
-                StatCell({ label: '最高', value: this.statMax, color: AppColor.DANGER }).layoutWeight(1)
-                StatCell({ label: '最低', value: this.statMin, color: AppColor.SECONDARY }).layoutWeight(1)
-                StatCell({ label: '平均', value: this.statAvg, color: AppColor.TEXT_2 }).layoutWeight(1)
-                StatCell({ label: '当前', value: this.statLast, color: AppColor.PRIMARY }).layoutWeight(1)
-              }
-              .width('100%')
-              .padding({ top: 4, bottom: 10 })
+                Text('历史监测数据')
+                  .fontSize(AppSize.SUBTITLE_FONT)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor(AppColor.TEXT)
+                  .layoutWeight(1)
 
-              // 折线图 + 告警红点
-              TrendChart({
-                points: this.trendPoints,
-                chartWidth: 336,
-                chartHeight: 190,
-                timeFrom: this.rangeFrom(DateUtil.now()),
-                timeTo: DateUtil.now(),
-                alerts: this.alerts,
-                onAlertTap: (a: Alert) => {
-                  this.alertPopup = a;
-                }
-              })
-
-              // 红点说明
-              Row() {
-                Row()
-                  .width(8)
-                  .height(8)
-                  .borderRadius(4)
-                  .backgroundColor(AppColor.DANGER)
-                  .margin({ right: 5 })
-                Text('红色圆点为该时段的历史告警事件，点击查看处置记录')
-                  .fontSize(10)
+                Select(this.rangeOptions())
+                  .value(this.rangeKey)
+                  .font({ size: AppSize.SMALL_FONT, weight: FontWeight.Normal })
                   .fontColor(AppColor.TEXT_3)
+                  .selectedOptionFontColor(AppColor.ACCENT)
+                  .optionFont({ size: AppSize.SMALL_FONT })
+                  .optionFontColor(AppColor.TEXT_2)
+                  .onSelect((index: number) => {
+                    const r: string[] = RealtimeStatusPage.RANGES[index];
+                    if (r !== undefined && r[0] !== this.rangeKey) {
+                      this.rangeKey = r[0];
+                      this.load();
+                    }
+                  })
               }
               .width('100%')
               .alignItems(VerticalAlign.Center)
-              .margin({ top: 10 })
+              .margin({ top: 4, bottom: 10 })
 
-              // ---------- 本时段告警（可点击直达详情） ----------
-              if (this.alerts.length > 0) {
-                Column() {
-                  Row() {
-                    Text(`本时段告警 ${this.alerts.length} 条`)
-                      .fontSize(AppSize.SMALL_FONT)
-                      .fontWeight(FontWeight.Bold)
-                      .fontColor(AppColor.TEXT_2)
-                      .layoutWeight(1)
-                    Text('点击查看详情 ›')
-                      .fontSize(10)
-                      .fontColor(AppColor.TEXT_3)
-                  }
-                  .width('100%')
-                  .margin({ bottom: 4 })
-
-                  ForEach(this.alerts.slice(0, 4), (a: Alert) => {
-                    Row() {
-                      Row()
-                        .width(7)
-                        .height(7)
-                        .borderRadius(3.5)
-                        .backgroundColor(AppColor.levelColor(a.level))
-                        .margin({ right: 8 })
-                      Column() {
-                        Text(a.alertTypeName)
-                          .fontSize(AppSize.SMALL_FONT)
-                          .fontColor(AppColor.TEXT)
-                          .maxLines(1)
-                          .textOverflow({ overflow: TextOverflow.Ellipsis })
-                        Text(this.alertMeta(a))
-                          .fontSize(10)
-                          .fontColor(AppColor.TEXT_3)
-                          .margin({ top: 2 })
-                          .maxLines(1)
-                          .textOverflow({ overflow: TextOverflow.Ellipsis })
-                      }
-                      .alignItems(HorizontalAlign.Start)
-                      .layoutWeight(1)
-                      Text('›')
-                        .fontSize(18)
-                        .fontColor(AppColor.TEXT_3)
-                        .margin({ left: 6 })
-                    }
-                    .width('100%')
-                    .alignItems(VerticalAlign.Center)
-                    .padding({ top: 9, bottom: 9 })
-                    .border({ width: { bottom: 1 }, color: AppColor.LINE })
-                    .onClick(() => {
-                      this.openAlertDetail(a);
-                    })
-                  }, (a: Alert) => `${a.alertId}_${a.status}`)
+              Column() {
+                // 传感器类型切换
+                Row() {
+                  this.typeChip(SensorType.PIR, '活动')
+                  this.typeChip(SensorType.TEMP_HUMIDITY, '温度')
+                  this.typeChip(SensorType.SMOKE, '烟雾')
+                  this.typeChip(SensorType.GAS, '燃气')
                 }
                 .width('100%')
-                .margin({ top: 12 })
+                .margin({ bottom: 12 })
+
+                // 统计条：最高 / 最低 / 平均 / 当前 —— 让曲线之外还有可读的硬指标
+                Row() {
+                  StatCell({ label: '最高', value: this.statMax, color: AppColor.DANGER }).layoutWeight(1)
+                  StatCell({ label: '最低', value: this.statMin, color: AppColor.SECONDARY }).layoutWeight(1)
+                  StatCell({ label: '平均', value: this.statAvg, color: AppColor.TEXT_2 }).layoutWeight(1)
+                  StatCell({ label: '当前', value: this.statLast, color: AppColor.ACCENT }).layoutWeight(1)
+                }
+                .width('100%')
+                .padding({ top: 4, bottom: 10 })
+
+                // 折线图 + 告警红点
+                TrendChart({
+                  points: this.trendPoints,
+                  chartWidth: 336,
+                  chartHeight: 190,
+                  timeFrom: this.rangeFrom(DateUtil.now()),
+                  timeTo: DateUtil.now(),
+                  alerts: this.alerts,
+                  onAlertTap: (a: Alert) => {
+                    this.alertPopup = a;
+                  }
+                })
+
+                // 红点说明
+                Row() {
+                  Row()
+                    .width(8)
+                    .height(8)
+                    .borderRadius(4)
+                    .backgroundColor(AppColor.DANGER)
+                    .margin({ right: 5 })
+                  Text('红色圆点为该时段的历史告警事件，点击查看处置记录')
+                    .fontSize(10)
+                    .fontColor(AppColor.TEXT_3)
+                }
+                .width('100%')
+                .alignItems(VerticalAlign.Center)
+                .margin({ top: 10 })
+
+                // ---------- 本时段告警（可点击直达详情） ----------
+                if (this.alerts.length > 0) {
+                  Column() {
+                    Row() {
+                      Text(`本时段告警 ${this.alerts.length} 条`)
+                        .fontSize(AppSize.SMALL_FONT)
+                        .fontWeight(FontWeight.Bold)
+                        .fontColor(AppColor.TEXT_2)
+                        .layoutWeight(1)
+                      Text('点击查看详情 ›')
+                        .fontSize(10)
+                        .fontColor(AppColor.TEXT_3)
+                    }
+                    .width('100%')
+                    .margin({ bottom: 4 })
+
+                    ForEach(this.alerts.slice(0, 4), (a: Alert) => {
+                      Row() {
+                        Row()
+                          .width(7)
+                          .height(7)
+                          .borderRadius(3.5)
+                          .backgroundColor(AppColor.levelColor(a.level))
+                          .margin({ right: 8 })
+                        Column() {
+                          Text(a.alertTypeName)
+                            .fontSize(AppSize.SMALL_FONT)
+                            .fontColor(AppColor.TEXT)
+                            .maxLines(1)
+                            .textOverflow({ overflow: TextOverflow.Ellipsis })
+                          Text(this.alertMeta(a))
+                            .fontSize(10)
+                            .fontColor(AppColor.TEXT_3)
+                            .margin({ top: 2 })
+                            .maxLines(1)
+                            .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        }
+                        .alignItems(HorizontalAlign.Start)
+                        .layoutWeight(1)
+                        Text('›')
+                          .fontSize(18)
+                          .fontColor(AppColor.TEXT_3)
+                          .margin({ left: 6 })
+                      }
+                      .width('100%')
+                      .alignItems(VerticalAlign.Center)
+                      .padding({ top: 9, bottom: 9 })
+                      .border({ width: { bottom: 1 }, color: AppColor.LINE })
+                      .onClick(() => {
+                        this.openAlertDetail(a);
+                      })
+                    }, (a: Alert) => `${a.alertId}_${a.status}`)
+                  }
+                  .width('100%')
+                  .margin({ top: 12 })
+                  .padding(12)
+                  .backgroundColor(AppColor.SURFACE)
+                  .borderRadius(AppSize.SMALL_RADIUS)
+                }
+
+                // ---------- 智能分析小结 ----------
+                Column() {
+                  Row() {
+                    Text('智能分析小结')
+                      .fontSize(AppSize.CAPTION_FONT)
+                      .fontWeight(FontWeight.Bold)
+                      .fontColor(AppColor.ACCENT)
+                      .layoutWeight(1)
+                  }
+                  .width('100%')
+
+                  Text(this.summary.length > 0 ? this.summary : '正在分析…')
+                    .fontSize(AppSize.SMALL_FONT)
+                    .fontColor(AppColor.TEXT_2)
+                    .lineHeight(20)
+                    .margin({ top: 8 })
+                    .width('100%')
+                }
+                .width('100%')
+                .alignItems(HorizontalAlign.Start)
                 .padding(12)
                 .backgroundColor(AppColor.SURFACE)
                 .borderRadius(AppSize.SMALL_RADIUS)
-              }
-
-              // ---------- 智能分析小结 ----------
-              Column() {
-                Row() {
-                  Text('智能分析小结')
-                    .fontSize(AppSize.CAPTION_FONT)
-                    .fontWeight(FontWeight.Bold)
-                    .fontColor(AppColor.PRIMARY)
-                    .layoutWeight(1)
-                }
-                .width('100%')
-
-                Text(this.summary.length > 0 ? this.summary : '正在分析…')
-                  .fontSize(AppSize.SMALL_FONT)
-                  .fontColor(AppColor.TEXT_2)
-                  .lineHeight(20)
-                  .margin({ top: 8 })
-                  .width('100%')
+                .margin({ top: 12 })
               }
               .width('100%')
               .alignItems(HorizontalAlign.Start)
-              .padding(12)
-              .backgroundColor(AppColor.SURFACE)
-              .borderRadius(AppSize.SMALL_RADIUS)
-              .margin({ top: 12 })
+              .padding(16)
+              .backgroundColor(AppColor.CARD)
+              .borderRadius(AppSize.CARD_RADIUS)
+              .margin({ top: 4 })
+
+              Blank().height(20)
             }
             .width('100%')
-            .alignItems(HorizontalAlign.Start)
-            .padding(16)
-            .backgroundColor(AppColor.CARD)
-            .borderRadius(AppSize.CARD_RADIUS)
-            .margin({ top: 4 })
-
-            Blank().height(20)
+            .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING })
           }
-          .width('100%')
-          .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING })
+          .scrollBar(BarState.Off)
         }
-        .scrollBar(BarState.Off)
-      }
-      .layoutWeight(1)
-      .onRefreshing(() => {
-        // 手势下拉触发：注入 2 条演示告警后重新拉取，节奏可控
-        this.refreshWithDemo();
-      })
+        .layoutWeight(1)
+        .onRefreshing(() => {
+          // 手势下拉触发：注入 2 条演示告警后重新拉取，节奏可控
+          this.refreshWithDemo();
+        })
+        }
+        .width('100%')
+        .height('100%')
+
+        // ---------- 告警红点详情弹窗 ----------
+        if (this.alertPopup !== undefined) {
+          this.alertPopupCard(this.alertPopup)
+        }
       }
       .width('100%')
       .height('100%')
+      .backgroundColor(AppColor.BG)
 
-      // ---------- 告警红点详情弹窗 ----------
-      if (this.alertPopup !== undefined) {
-        this.alertPopupCard(this.alertPopup)
-      }
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(AppColor.BG)
   }
+
 
   /**
    * 置顶的紧急求助按钮卡片。
@@ -1219,6 +1299,10 @@ export struct RealtimeStatusPage {
     .borderRadius(AppSize.CARD_RADIUS)
     .border({ width: 1, color: vm.border })
     .margin({ bottom: 12 })
+    .onClick(() => {
+      // SOS 点进去看的是"触发记录"而不是趋势线 —— 事件型传感器没有连续量
+      this.openSensorDetail(SensorType.SOS_BUTTON);
+    })
   }
 
   /**
@@ -1347,6 +1431,15 @@ export struct RealtimeStatusPage {
           .height(8)
           .borderRadius(4)
           .backgroundColor(vm.color)
+        // 右向箭头：告诉家属这张卡还能点进去。没有它，卡片看起来
+        // 和纯展示的静态块没区别，用户不会去点。
+        // 电量没有详情可看，就不给这个暗示。
+        if (vm.clickable) {
+          Text('›')
+            .fontSize(18)
+            .fontColor(AppColor.TEXT_3)
+            .margin({ left: 8 })
+        }
       }
       .width('100%')
       .alignItems(VerticalAlign.Center)
@@ -1370,13 +1463,18 @@ export struct RealtimeStatusPage {
     .borderRadius(AppSize.CARD_RADIUS)
     .border({ width: 1, color: vm.border })
     .margin({ bottom: 10 })
+    .onClick(() => {
+      if (vm.clickable) {
+        this.openSensorDetail(vm.sensor.sensorType);
+      }
+    })
   }
 
   @Builder
   typeChip(type: string, label: string) {
     Text(label)
       .fontSize(AppSize.SMALL_FONT)
-      .fontColor(this.selectedType === type ? AppColor.CARD : AppColor.TEXT_2)
+      .fontColor(this.selectedType === type ? AppColor.ON_PRIMARY: AppColor.TEXT_2)
       .backgroundColor(this.selectedType === type ? AppColor.PRIMARY : AppColor.SURFACE)
       .padding({ left: 12, right: 12, top: 6, bottom: 6 })
       .borderRadius(14)

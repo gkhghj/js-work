@@ -2,6 +2,7 @@ import { TrendPoint } from '../../model/ActivityRecord';
 import { Alert } from '../../model/Alert';
 import { AppColor, AppSize } from '../../common/constants/ThemeColors';
 
+import { ThemeMode, ThemeStore } from '../../common/theme/ThemeStore';
 /**
  * 通用趋势折线图。
  *
@@ -14,6 +15,13 @@ import { AppColor, AppSize } from '../../common/constants/ThemeColors';
  */
 @Component
 export struct TrendChart {
+
+  /**
+   * 订阅显示设置。@StorageProp 会在主题 / 关怀模式变化时触发本组件重渲染，
+   * 这样 ThemeStore 一改，AppColor / AppSize 的 getter 重新取值，全页同步换肤。
+   */
+  @StorageProp('displayMode') displayMode: string = 'day';
+  @StorageProp('careMode') careMode: boolean = false;
   // 数据变化后必须重绘：Canvas 的 onReady 只触发一次，
   // 不显式重绘的话切换时间范围会一直停在旧曲线上。
   @Prop @Watch('onPointsChanged') points: TrendPoint[];
@@ -35,6 +43,29 @@ export struct TrendChart {
   @Prop baselineColor: string = 'rgba(224,138,0,0.55)';
   /** 是否在基线右端标注数值（如 "37.6"）。屏幕放不下时不必强标 */
   @Prop showBaselineLabel: boolean = false;
+  /**
+   * 是否画基线虚线。默认画。
+   *
+   * 开关量（门窗磁 0/1）要关掉：它的"均值"会落在 0.16 这种位置上，
+   * 图上多出一条橙虚线，读图的人会以为那是个阈值，反而误导。
+   */
+  @Prop showBaseline: boolean = true;
+  /**
+   * 开关量模式：Y 轴固定 0-1，只标「关 / 开」两档。
+   *
+   * 门窗磁这类传感器的值只有开和关，按常规数值轴会画出
+   * 0.2 / 0.4 / 0.6 / 0.8 / 1 五档刻度 —— 家属看不懂 0.4 扇门是什么意思。
+   */
+  @Prop boolAxis: boolean = false;
+  /**
+   * 开关量两端的标签。门窗用「关 / 开」，人体活动用「静 / 动」，
+   * 30 天日聚合下换成「无 / 有」。
+   *
+   * 必须挂 @Watch：Canvas 画一次就定住了，标签变了不会自己重画。
+   * 实测踩坑：切到 30 天后点数变了触发重绘，但标签仍是「开 / 关」。
+   */
+  @Prop @Watch('onPointsChanged') boolOffLabel: string = '关';
+  @Prop @Watch('onPointsChanged') boolOnLabel: string = '开';
   /** 统计窗口起始时间戳。配合 timeTo 把告警时间映射到 X 轴 */
   @Prop timeFrom: number = 0;
   /** 统计窗口结束时间戳 */
@@ -66,27 +97,52 @@ export struct TrendChart {
     }
   }
 
-  build() {
-    // 圆角与底色移到 Stack 上：红点要覆盖在 Canvas 之上，
-    // 若继续挂在 Canvas 上，红点会被裁到 Canvas 边界之外。
-    Stack({ alignContent: Alignment.TopStart }) {
-      Canvas(this.ctx)
-        .width(this.chartWidth)
-        .height(this.chartHeight)
-        .onReady(() => {
-          this.canvasReady = true;
-          this.draw();
-        })
+  /**
+   * 主题签名：日间/夜间 × 关怀模式，四种组合各走一支。
+   *
+   * 每一支都调用同一个 @Builder pageRoot()。主题任一维度变化都会换分支，
+   * ArkUI 随之销毁旧子树、重建新子树 —— 这是必须的：
+   * AppColor / AppSize 是静态 getter，ArkTS 追踪不到它们内部读的 AppStorage，
+   * 所以「没有依赖被追踪状态」的属性表达式切主题时不会重新求值。
+   * 只有整棵子树重建，静态 getter 才会拿到新值。
+   */
 
-      ForEach(this.alerts, (a: Alert) => {
-        this.alertDot(a)
-      }, (a: Alert) => a.alertId)
+  build() {
+    if (this.displayMode === ThemeMode.NIGHT && this.careMode) {
+      this.pageRoot();
+    } else if (this.displayMode === ThemeMode.NIGHT) {
+      this.pageRoot();
+    } else if (this.careMode) {
+      this.pageRoot();
+    } else {
+      this.pageRoot();
     }
-    .width(this.chartWidth)
-    .height(this.chartHeight)
-    .backgroundColor(AppColor.SURFACE)
-    .borderRadius(AppSize.SMALL_RADIUS)
   }
+
+  @Builder
+  pageRoot() {
+      // 圆角与底色移到 Stack 上：红点要覆盖在 Canvas 之上，
+      // 若继续挂在 Canvas 上，红点会被裁到 Canvas 边界之外。
+      Stack({ alignContent: Alignment.TopStart }) {
+        Canvas(this.ctx)
+          .width(this.chartWidth)
+          .height(this.chartHeight)
+          .onReady(() => {
+            this.canvasReady = true;
+            this.draw();
+          })
+
+        ForEach(this.alerts, (a: Alert) => {
+          this.alertDot(a)
+        }, (a: Alert) => a.alertId)
+      }
+      .width(this.chartWidth)
+      .height(this.chartHeight)
+      .backgroundColor(AppColor.SURFACE)
+      .borderRadius(AppSize.SMALL_RADIUS)
+
+  }
+
 
   /**
    * 告警事件红点。
@@ -162,17 +218,23 @@ export struct TrendChart {
       maxV = Math.max(maxV, p.count);
       sum += p.count;
     }
-    maxV = Math.max(1, Math.ceil(maxV * 1.15));
+    // 开关量固定 0-1 两档，否则按最大值上浮 15%，保证曲线不贴顶
+    maxV = this.boolAxis ? 1 : Math.max(1, Math.ceil(maxV * 1.15));
     const avg: number = this.baseline > 0 ? this.baseline : sum / n;
 
     // Y 轴刻度
-    this.ctx.fillStyle = AppColor.TEXT_3;
-    this.ctx.font = '10px sans-serif';
     this.ctx.textAlign = 'right';
     for (let i = 0; i <= 4; i++) {
       const v: number = Math.round(maxV * i / 4);
       const y: number = this.padTop + plotH - (plotH * i / 4);
-      this.ctx.fillText(`${v}`, this.padLeft - 6, y + 3);
+      // 开关量只在上下两端写字：中间三档（0.25/0.5/0.75）没有语义。
+      // 字用深一档的灰、字号大一档：只有两个字，太浅会看不清。
+      if (!this.boolAxis || i === 0 || i === 4) {
+        this.ctx.fillStyle = this.boolAxis ? AppColor.TEXT_2 : AppColor.TEXT_3;
+        this.ctx.font = this.boolAxis ? '11px sans-serif' : '10px sans-serif';
+        this.ctx.fillText(this.boolAxis ? (v > 0 ? this.boolOnLabel : this.boolOffLabel) : `${v}`,
+          this.padLeft - 6, y + 3);
+      }
       // 网格线
       this.ctx.strokeStyle = 'rgba(26,29,33,0.08)';
       this.ctx.lineWidth = 1;
@@ -186,17 +248,19 @@ export struct TrendChart {
     // Y 轴上限要把基线一起纳入：个性化基线高于本页最高值时，
     // 不扩上限会把基线画到绘图区外，用户看到的图与"基线"二字对不上。
     const baseY: number = this.padTop + plotH - Math.min(avg, maxV) / maxV * plotH;
-    this.ctx.strokeStyle = this.baselineColor;
-    this.ctx.lineWidth = 1;
-    this.ctx.setLineDash([5, 4]);
-    this.ctx.beginPath();
-    this.ctx.moveTo(this.padLeft, baseY);
-    this.ctx.lineTo(w - this.padRight, baseY);
-    this.ctx.stroke();
-    this.ctx.setLineDash([]);
+    if (this.showBaseline) {
+      this.ctx.strokeStyle = this.baselineColor;
+      this.ctx.lineWidth = 1;
+      this.ctx.setLineDash([5, 4]);
+      this.ctx.beginPath();
+      this.ctx.moveTo(this.padLeft, baseY);
+      this.ctx.lineTo(w - this.padRight, baseY);
+      this.ctx.stroke();
+      this.ctx.setLineDash([]);
+    }
 
     // 基线数值标注：贴右端内侧，避免被圆角裁掉
-    if (this.showBaselineLabel) {
+    if (this.showBaseline && this.showBaselineLabel) {
       this.ctx.fillStyle = this.baselineColor;
       this.ctx.font = '10px sans-serif';
       this.ctx.textAlign = 'right';
@@ -209,7 +273,12 @@ export struct TrendChart {
     const ys: number[] = [];
     for (let i = 0; i < n; i++) {
       xs.push(this.padLeft + i * stepX);
-      ys.push(this.padTop + plotH - (this.points[i].count / maxV) * plotH);
+      // 开关量先二值化再定位：7 天 / 30 天走日聚合，服务端返回的是
+      // 当天均值（0.3 这种），直接按数值画会得到一条"半开"的斜坡，
+      // 读图的人分不清到底开没开。二值化后只回答"那天有没有开过"。
+      const raw: number = this.points[i].count;
+      const v: number = this.boolAxis ? (raw > 0 ? 1 : 0) : raw;
+      ys.push(this.padTop + plotH - (v / maxV) * plotH);
     }
 
     // 折线下方的渐变填充：顶部用折线色的浅色、底部淡出到透明，
@@ -253,7 +322,7 @@ export struct TrendChart {
       const isLast: boolean = i === n - 1;
       this.ctx.beginPath();
       this.ctx.arc(xs[i], ys[i], isLast ? 4.5 : 2.6, 0, Math.PI * 2);
-      this.ctx.fillStyle = isLast ? AppColor.PRIMARY : this.lineColor;
+      this.ctx.fillStyle = isLast ? AppColor.ACCENT : this.lineColor;
       this.ctx.fill();
       if (isLast) {
         this.ctx.strokeStyle = '#FFFFFF';
@@ -263,15 +332,18 @@ export struct TrendChart {
     }
 
     // 末值标注：贴最后一个点上方，数据"最后一刻是多少"一眼可见
-    const lastVal: number = this.points[n - 1].count;
-    let ly: number = ys[n - 1] - 10;
-    if (ly < this.padTop + 10) {
-      ly = ys[n - 1] + 18;
+    // 开关量不标：图上已经写了「开 / 关」，再挂个 0 或 1 只是噪声
+    if (!this.boolAxis) {
+      const lastVal: number = this.points[n - 1].count;
+      let ly: number = ys[n - 1] - 10;
+      if (ly < this.padTop + 10) {
+        ly = ys[n - 1] + 18;
+      }
+      this.ctx.fillStyle = AppColor.ACCENT;
+      this.ctx.font = 'bold 11px sans-serif';
+      this.ctx.textAlign = 'center';
+      this.ctx.fillText(`${Math.round(lastVal * 10) / 10}`, xs[n - 1], ly);
     }
-    this.ctx.fillStyle = AppColor.PRIMARY;
-    this.ctx.font = 'bold 11px sans-serif';
-    this.ctx.textAlign = 'center';
-    this.ctx.fillText(`${Math.round(lastVal * 10) / 10}`, xs[n - 1], ly);
 
     // X 轴日期标签（只标首、中、末）
     this.ctx.fillStyle = AppColor.TEXT_3;

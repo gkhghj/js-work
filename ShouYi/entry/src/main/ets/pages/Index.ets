@@ -7,6 +7,7 @@ import { CareService } from '../service/CareService';
 import { AppColor } from '../common/constants/ThemeColors';
 import { Logger } from '../common/utils/Logger';
 
+import { ThemeMode, ThemeStore } from '../common/theme/ThemeStore';
 /**
  * 应用主框架 —— 五 Tab 容器。
  *
@@ -31,6 +32,13 @@ import { Logger } from '../common/utils/Logger';
 @Entry
 @Component
 struct Index {
+
+  /**
+   * 订阅显示设置。@StorageProp 会在主题 / 关怀模式变化时触发本组件重渲染，
+   * 这样 ThemeStore 一改，AppColor / AppSize 的 getter 重新取值，全页同步换肤。
+   */
+  @StorageProp('displayMode') displayMode: string = 'day';
+  @StorageProp('careMode') careMode: boolean = false;
   private static readonly MODULE: string = 'Index';
 
   /** 预警中心的 Tab 下标（角标挂在这里） */
@@ -41,9 +49,10 @@ struct Index {
   /** 待处置预警数，用于"预警中心"Tab 的角标 */
   @State pendingCount: number = 0;
   /**
-   * 预警列表刷新信号。
-   * 切到预警中心时 +1，AlertCenterPage 通过 @StorageLink 监听并重新拉列表 ——
-   * 否则页签缓存会停在旧数据（如在实时状态页模拟了几条告警，切过来却看不到）。
+   * 页签切换广播信号。
+   * 每次切页签 +1，五个页签都通过 @StorageLink 监听并重新拉各自的数据 ——
+   * 否则页签缓存会停在旧数据：在预警中心处置完切回首页，
+   * 首页的待处理数还停留在进入预警中心之前的值。
    */
   @StorageLink('alertRefreshTick') alertTick: number = 0;
 
@@ -77,54 +86,80 @@ struct Index {
     }
   }
 
+  /**
+   * 主题签名：日间/夜间 × 关怀模式，四种组合各走一支。
+   *
+   * 每一支都调用同一个 @Builder pageRoot()。主题任一维度变化都会换分支，
+   * ArkUI 随之销毁旧子树、重建新子树 —— 这是必须的：
+   * AppColor / AppSize 是静态 getter，ArkTS 追踪不到它们内部读的 AppStorage，
+   * 所以「没有依赖被追踪状态」的属性表达式切主题时不会重新求值。
+   * 只有整棵子树重建，静态 getter 才会拿到新值。
+   */
+
   build() {
-    Tabs({ barPosition: BarPosition.End, index: this.currentIndex, controller: this.tabsController }) {
-      TabContent() {
-        HomePage({
-          onNavigate: (index: number) => {
-            this.goToTab(index);
-          }
-        })
-      }
-      .tabBar(this.tabItem(0, '首页'))
-
-      TabContent() {
-        RealtimeStatusPage()
-      }
-      .tabBar(this.tabItem(1, '实时状态'))
-
-      TabContent() {
-        ActivityReportPage()
-      }
-      .tabBar(this.tabItem(2, '活动报告'))
-
-      TabContent() {
-        AlertCenterPage()
-      }
-      .tabBar(this.tabItem(Index.TAB_ALERT, '预警中心'))
-
-      TabContent() {
-        MinePage()
-      }
-      .tabBar(this.tabItem(4, '设置与设备'))
+    if (this.displayMode === ThemeMode.NIGHT && this.careMode) {
+      this.pageRoot();
+    } else if (this.displayMode === ThemeMode.NIGHT) {
+      this.pageRoot();
+    } else if (this.careMode) {
+      this.pageRoot();
+    } else {
+      this.pageRoot();
     }
-    .barMode(BarMode.Fixed)
-    .barHeight(58)
-    .barBackgroundColor(AppColor.CARD)
-    .scrollable(true)
-    .animationDuration(200)
-    .onChange((index: number) => {
-      this.currentIndex = index;
-      // 进入预警页时刷新角标与列表：用户可能刚在详情页处置完，或在实时页模拟了告警
-      if (index === Index.TAB_ALERT) {
+  }
+
+  @Builder
+  pageRoot() {
+      Tabs({ barPosition: BarPosition.End, index: this.currentIndex, controller: this.tabsController }) {
+        TabContent() {
+          HomePage({
+            onNavigate: (index: number) => {
+              this.goToTab(index);
+            }
+          })
+        }
+        .tabBar(this.tabItem(0, '首页'))
+
+        TabContent() {
+          RealtimeStatusPage()
+        }
+        .tabBar(this.tabItem(1, '实时状态'))
+
+        TabContent() {
+          ActivityReportPage()
+        }
+        .tabBar(this.tabItem(2, '活动报告'))
+
+        TabContent() {
+          AlertCenterPage()
+        }
+        .tabBar(this.tabItem(Index.TAB_ALERT, '预警中心'))
+
+        TabContent() {
+          MinePage()
+        }
+        .tabBar(this.tabItem(4, '设置与设备'))
+      }
+      .barMode(BarMode.Fixed)
+      .barHeight(58)
+      .barBackgroundColor(AppColor.CARD)
+      .scrollable(true)
+      .animationDuration(200)
+      .onChange((index: number) => {
+        this.currentIndex = index;
+        // 每次切页签都广播一次刷新信号 + 刷角标。
+        // Tabs 会缓存页签，各页的 aboutToAppear 终生只跑一次；
+        // 不广播的话，在预警中心处置完切回首页，首页的待处理数还停在旧值，
+        // 页签角标也对不上 —— 这是「首页与预警中心不同步」的根因。
         this.refreshBadge();
         this.alertTick = this.alertTick + 1;
-      }
-    })
-    .width('100%')
-    .height('100%')
-    .backgroundColor(AppColor.BG)
+      })
+      .width('100%')
+      .height('100%')
+      .backgroundColor(AppColor.BG)
+
   }
+
 
   /**
    * 单个底部导航项。
@@ -140,21 +175,21 @@ struct Index {
       Divider()
         .width(18)
         .strokeWidth(3)
-        .color(this.currentIndex === index ? AppColor.PRIMARY : Color.Transparent)
+        .color(this.currentIndex === index ? AppColor.ACCENT : Color.Transparent)
         .margin({ bottom: 5 })
 
       Row() {
         Text(title)
           .fontSize(this.currentIndex === index ? 13 : 12)
           .fontWeight(this.currentIndex === index ? FontWeight.Bold : FontWeight.Normal)
-          .fontColor(this.currentIndex === index ? AppColor.PRIMARY : AppColor.TEXT_3)
+          .fontColor(this.currentIndex === index ? AppColor.ACCENT : AppColor.TEXT_3)
           .maxLines(1)
 
         // 仅"预警中心"Tab 显示待处置角标
         if (index === Index.TAB_ALERT && this.pendingCount > 0) {
           Text(this.pendingCount > 99 ? '99+' : `${this.pendingCount}`)
             .fontSize(9)
-            .fontColor(AppColor.CARD)
+            .fontColor(AppColor.ON_PRIMARY)
             .backgroundColor(AppColor.DANGER)
             .borderRadius(9)
             .padding({ left: 4, right: 4, top: 1, bottom: 1 })

@@ -84,9 +84,25 @@ export class ActivityReport {
 
   // ---------- 图表数据 ----------
   daily: TrendPoint[] = [];
+  /**
+   * 趋势图的上下文曲线：固定取最近 14 天。
+   *
+   * 为什么单独一条：日报的窗口只有 1 天，直接画 daily 会只有一个点，
+   * 折线图退化成孤零零一个圆点，看不出任何走势。
+   * 日报页改用这条 14 天的曲线，既保留「今天」这个末点，又能看出波动。
+   */
+  dailyTrend: TrendPoint[] = [];
   hourlyDistribution: number[] = new Array<number>(24).fill(0);
   heatmap: HeatmapCell[] = [];
   maxHeatmapCount: number = 1;
+  /**
+   * 热力图的行标签（日期，升序）。
+   *
+   * 为什么不直接复用 daily：日报的 daily 只有「今天」1 天，
+   * 热力图就退化成一条 24 格细带 —— 既看不出作息规律，页面上也显得空。
+   * 日报改为给近 7 天做上下文，今天固定落在最后一行。
+   */
+  heatmapDates: string[] = [];
 
   // ---------- 个人基线 ----------
   baselineAvg: number = 0;

@@ -25,6 +25,7 @@ import {
 } from './CloudTypes';
 import { IotDaHttp } from './IotDaHttp';
 import { IotDaLocalStore } from './IotDaLocalStore';
+import { DemoDataSeeder } from './DemoDataSeeder';
 import {
   IotDaDeviceListResp, IotDaDeviceBrief, IotDaDeviceDetail,
   IotDaShadowResp, IotDaShadowService, IotDaCommandReq, IotDaCommandResp
@@ -36,6 +37,7 @@ import { FamilyMember } from '../model/FamilyMember';
 import { CloudCode, SensorType, AlertType, AlertLevel } from '../common/constants/AppConstants';
 import { Logger } from '../common/utils/Logger';
 import { DateUtil } from '../common/utils/DateUtil';
+import { IotDaConfig } from './IotDaConfig';
 
 /** 影子里的属性键 —— 与 product_model.json 的 property_key 一一对应 */
 class PKey {
@@ -98,6 +100,16 @@ export class IotDaCloudAdapter implements CloudApi {
     this.store.init(filesDir);
   }
 
+  /**
+   * 种入演示数据（截图 / 答辩用）。
+   *
+   * 必须在 initStore 之后调用。内部走 merge 语义，已存在的真实数据不会被覆盖，
+   * 所以可以每次启动都调，不会越种越多。是否调用由 IotDaConfig.DEMO_MODE 决定。
+   */
+  seedDemoData(deviceId: string, deviceName: string): void {
+    DemoDataSeeder.seed(this.store, deviceId, deviceName);
+  }
+
   /** 轮询间隔：IoTDA 没有推送通道给应用侧，只能用轮询影子近似 */
   private static readonly POLL_MS: number = 4000;
 
@@ -119,6 +131,8 @@ export class IotDaCloudAdapter implements CloudApi {
   /** 读数环形缓冲上限。4 秒一条 × 5 个传感器，2000 条约覆盖 26 分钟 */
   private static readonly RING_MAX: number = 2000;
   private ring: BufferedReading[] = [];
+  /** 最近一次影子快照。环形缓冲为空时（刚启动）用它当合成曲线的锚点 */
+  private lastRep: Record<string, number | string | boolean> = {};
   /** 设备显示名，从最近一次查询里缓存下来，供告警文案使用 */
   private deviceName: string = '居家安全网关';
 
@@ -206,6 +220,27 @@ export class IotDaCloudAdapter implements CloudApi {
     const hasAnyVital: boolean = d.heartRate > 0 || d.spo2 > 0
       || d.bodyTemp > 0 || d.steps > 0;
     d.vitalsAt = hasAnyVital ? Date.now() : 0;
+
+    // 演示模式：板子离线 / 主机没接体征传感器时，页面会是「离线横幅 + 四格无读数」，
+    // 截图和答辩都没法看。这里按在线 + 演示体征展示 —— 只影响展示层，
+    // 不改任何上报数据。IotDaConfig.DEMO_MODE 关掉即恢复真实状态。
+    if (IotDaConfig.DEMO_MODE) {
+      d.online = true;
+      if (d.heartRate <= 0) {
+        d.heartRate = 72;
+        d.heartRateAt = Date.now();
+      }
+      if (d.spo2 <= 0) {
+        d.spo2 = 97;
+      }
+      if (d.bodyTemp <= 0) {
+        d.bodyTemp = 36.5;
+      }
+      if (d.steps <= 0) {
+        d.steps = 3280;
+      }
+      d.vitalsAt = Date.now();
+    }
     return d;
   }
 
@@ -430,10 +465,13 @@ export class IotDaCloudAdapter implements CloudApi {
       create_time: detail.create_time
     };
 
+    const device: Device = this.buildDevice(brief, rep);
     const resp: DeviceStatusResp = {
-      device: this.buildDevice(brief, rep),
+      device: device,
       sensors: this.buildSensors(rep, realId),
-      sosButtonOnline: detail.status === 'ONLINE',
+      // 用设备对象的 online 而不是 detail.status：演示模式下 buildDevice 会把它置为在线，
+      // 两处判断必须同源，否则会出现「显示在线但 SOS 按钮显示离线」的自相矛盾。
+      sosButtonOnline: device.online,
       sosButtonBattery: this.num(rep, PKey.BATTERY, 0),
       recentAlerts: []
     };
@@ -571,10 +609,23 @@ export class IotDaCloudAdapter implements CloudApi {
     }
     const now: number = Date.now();
     const tpls: DemoAlertTemplate[] = IotDaCloudAdapter.demoTemplates();
+    // 同一类型只要还有未处置的就不再注入。
+    // 不加这道闸，演示时反复下拉刷新会刷出一串"老人按下紧急求助按钮"，
+    // 看起来像老人连按了五次没人管 —— 反而削弱告警的可信度。
+    const pendingTypes: Set<string> = new Set<string>();
+    for (const a of this.store.loadAlerts()) {
+      if (a.status === 'pending' || a.status === 'confirmed') {
+        pendingTypes.add(a.alertType);
+      }
+    }
     let added: number = 0;
     // 从旧到新依次 append（appendAlert 是 unshift），最终列表最新在前
     for (let k: number = count - 1; k >= 0; k--) {
       const tpl: DemoAlertTemplate = tpls[(Math.floor(now / 1000) + k) % tpls.length];
+      if (pendingTypes.has(tpl.type)) {
+        continue;
+      }
+      pendingTypes.add(tpl.type);
       const alert: Alert = new Alert();
       alert.alertId = `demo_${tpl.type}_${now}_${k}`;
       alert.serverAlertId = '';
@@ -643,6 +694,7 @@ export class IotDaCloudAdapter implements CloudApi {
         : (query.interval === '1d' ? 86400000 : 0));
 
     const src: BufferedReading[] = [];
+    const occupied: Set<number> = new Set<number>();
     for (const b of this.ring) {
       if (b.sensorType !== query.sensorType) {
         continue;
@@ -654,11 +706,25 @@ export class IotDaCloudAdapter implements CloudApi {
         continue;
       }
       src.push(b);
+      if (bucketMs > 0) {
+        occupied.add(Math.floor(b.timestamp / bucketMs));
+      }
+    }
+
+    // 历史补形：环形缓冲只覆盖 App 在线的那几十分钟，其余区间是空的，
+    // 曲线看起来像一根断掉的短线。这里按「当前真实值为锚点 + 昼夜节律」
+    // 把缺口补上。已经被真实数据占用的桶一律不碰。
+    let all: BufferedReading[] = src;
+    if (IotDaConfig.DEMO_SYNTH_READINGS && bucketMs > 0 && query.from > 0 && query.to > query.from) {
+      const synth: BufferedReading[] = this.synthSeries(query.sensorType, query.from, query.to, bucketMs, occupied);
+      if (synth.length > 0) {
+        all = src.concat(synth);
+      }
     }
 
     const points: ReadingsPoint[] = [];
     if (bucketMs === 0) {
-      for (const b of src) {
+      for (const b of all) {
         const p: ReadingsPoint = {
           timestamp: b.timestamp,
           value: b.value,
@@ -673,7 +739,7 @@ export class IotDaCloudAdapter implements CloudApi {
       const vCnt: number[] = [];
       const hSum: number[] = [];
       const hCnt: number[] = [];
-      for (const b of src) {
+      for (const b of all) {
         const k: number = Math.floor(b.timestamp / bucketMs);
         let idx: number = keys.indexOf(k);
         if (idx < 0) {
@@ -691,7 +757,14 @@ export class IotDaCloudAdapter implements CloudApi {
           hCnt[idx] = hCnt[idx] + 1;
         }
       }
+      // 分桶时 keys 是按遍历顺序插入的，而 all 里真实点在前后拼过，顺序会乱。
+      // 按桶号排序后再输出，否则折线图会来回折返。
+      const order: number[] = [];
       for (let i: number = 0; i < keys.length; i++) {
+        order.push(i);
+      }
+      order.sort((a: number, b: number) => keys[a] - keys[b]);
+      for (const i of order) {
         const avg: number = vCnt[i] > 0 ? Math.round(vSum[i] / vCnt[i] * 100) / 100 : 0;
         const hum: number = hCnt[i] > 0 ? Math.round(hSum[i] / hCnt[i] * 10) / 10 : 0;
         const p: ReadingsPoint = {
@@ -711,9 +784,117 @@ export class IotDaCloudAdapter implements CloudApi {
     return resp;
   }
 
+  /**
+   * 补出窗口内缺失的桶。
+   *
+   * 只补 occupied 之外的桶 —— 真实数据一个都不动，合成点永远只是"垫底"。
+   * 取值以当前真实读数为锚点，叠加昼夜节律与确定性噪声：
+   * 温度凌晨低、下午高；湿度反过来；人体活动按作息权重给 0/1；
+   * 门窗只在早晚出门时段为 1；烟雾燃气围绕当前值小幅波动。
+   */
+  private synthSeries(type: string, from: number, to: number, bucketMs: number,
+    occupied: Set<number>): BufferedReading[] {
+    const out: BufferedReading[] = [];
+    const anchor: number = this.anchorOf(type);
+    const anchorHum: number = this.anchorOf(SensorType.TEMP_HUMIDITY);
+    const start: number = Math.floor(from / bucketMs);
+    const end: number = Math.floor(to / bucketMs);
+
+    for (let k: number = start; k <= end; k++) {
+      if (occupied.has(k)) {
+        continue;
+      }
+      const ts: number = k * bucketMs + Math.floor(bucketMs / 2);
+      const b: BufferedReading = new BufferedReading();
+      b.sensorType = type;
+      b.timestamp = ts;
+      b.value = this.synthValue(type, ts, anchor, bucketMs);
+      b.humidity = type === SensorType.TEMP_HUMIDITY ? this.synthHumidity(ts, anchorHum) : 0;
+      out.push(b);
+    }
+    return out;
+  }
+
+  /** 当前真实读数作为合成锚点：优先取环形缓冲最后一个点，其次取最近一次影子 */
+  private anchorOf(type: string): number {
+    for (let i: number = this.ring.length - 1; i >= 0; i--) {
+      if (this.ring[i].sensorType === type) {
+        return this.ring[i].value;
+      }
+    }
+    switch (type) {
+      case SensorType.PIR:
+        return this.flag(this.lastRep, PKey.PIR, false) ? 1 : 0;
+      case SensorType.DOOR:
+        return this.num(this.lastRep, PKey.DOOR, 0);
+      case SensorType.TEMP_HUMIDITY:
+        return this.num(this.lastRep, PKey.TEMP, 26);
+      case SensorType.SMOKE:
+        return this.num(this.lastRep, PKey.SMOKE, 18);
+      case SensorType.GAS:
+        return this.num(this.lastRep, PKey.GAS, 18);
+      default:
+        return 0;
+    }
+  }
+
+  private synthValue(type: string, ts: number, anchor: number, bucketMs: number = 3600000): number {
+    const h: number = new Date(ts).getHours();
+    const n: number = this.noise(ts, type.length);
+    // 日聚合：每个桶代表一整天，按"某个整点开没开门"来算没有意义
+    // （桶的时间戳固定落在当天 12:00），会得到一条全零的假曲线。
+    // 这里改成按日期做确定性伪随机，表达"这一天有没有人进出/活动"。
+    const daily: boolean = bucketMs >= 86400000;
+    switch (type) {
+      case SensorType.TEMP_HUMIDITY:
+        // 凌晨 5 点最低、下午 15 点最高，振幅 ±2.4℃
+        return Math.round((anchor + 2.4 * Math.sin((h - 9.5) * Math.PI / 12)
+          + (n - 0.5) * 0.5) * 10) / 10;
+      case SensorType.PIR:
+        // 作息权重 ≥1 的小时判为"有人活动"。用权重而不是随机数，
+        // 曲线才会呈现早中晚三个活跃峰，而不是一片乱跳。
+        if (daily) {
+          const d: number = Math.floor(ts / 86400000);
+          return (d * 41 % 100) < 92 ? 1 : 0;
+        }
+        return DemoDataSeeder.hourWeight(h) >= 1.0 ? 1 : 0;
+      case SensorType.DOOR:
+        if (daily) {
+          // 门窗几乎天天开合，留少量空白天曲线才有起伏，不至于一条直线
+          const d: number = Math.floor(ts / 86400000);
+          return (d * 37 % 100) < 88 ? 1 : 0;
+        }
+        return (h === 7 || h === 8 || h === 17 || h === 18) ? 1 : 0;
+      case SensorType.SMOKE:
+      case SensorType.GAS:
+        return Math.max(0, Math.round(anchor + (n - 0.5) * 4));
+      default:
+        return anchor;
+    }
+  }
+
+  private synthHumidity(ts: number, anchor: number): number {
+    const h: number = new Date(ts).getHours();
+    // 与温度反相：温度高时湿度低
+    const v: number = anchor - 6 * Math.sin((h - 9.5) * Math.PI / 12);
+    return Math.round(Math.max(20, Math.min(90, v)) * 10) / 10;
+  }
+
+  /**
+   * 确定性噪声（0~1）。
+   *
+   * 不用 Math.random()：曲线每次刷新都变一个样，截图和录屏对不上，
+   * 而且看起来像数据在乱跳。同一个时间戳永远得到同一个值。
+   */
+  private noise(ts: number, salt: number): number {
+    const x: number = Math.sin(ts / 3600000 * 12.9898 + salt * 78.233) * 43758.5453;
+    return x - Math.floor(x);
+  }
+
   /** 把当前影子值追加进环形缓冲（供实时曲线） */
   private appendRing(rep: Record<string, number | string | boolean>): void {
     const ts: number = Date.now();
+    this.lastRep = rep;
     const hum: number = this.num(rep, PKey.HUM, 0);
     this.pushRing(SensorType.PIR, ts, this.flag(rep, PKey.PIR, false) ? 1 : 0, 0);
     this.pushRing(SensorType.DOOR, ts, this.num(rep, PKey.DOOR, 0), 0);
@@ -849,15 +1030,66 @@ export class IotDaCloudAdapter implements CloudApi {
     r.nightActivityCount = night;
     r.daily = trend;
 
-    // 小时分布与热力图
+    // 趋势图上下文：近 14 天
+    // 日报窗口只有 1 天，直接画 daily 只有一个点；这里单独给一条 14 天的曲线，
+    // 让日报页也能看出走势，同时末点仍是今天。
+    const ctxWin: ActivityDaily[] = all.slice(Math.max(0, all.length - 14));
+    const ctxTrend: TrendPoint[] = [];
+    for (const d of ctxWin) {
+      const p: TrendPoint = new TrendPoint();
+      p.date = d.date;
+      p.count = d.totalCount;
+      ctxTrend.push(p);
+    }
+    r.dailyTrend = ctxTrend;
+
+    // 小时分布
+    //
+    // ⚠️ 必须按「本期窗口」过滤：loadHourly 返回的是本地全部历史格子，
+    // 不过滤的话「日报」会把 30 天的量全加进来，小时分布虚高几十倍。
+    const windowDates: Set<string> = new Set<string>();
+    for (const d of window) {
+      windowDates.add(d.date);
+    }
     const hourly: number[] = new Array<number>(24).fill(0);
-    const cells: HeatmapCell[] = this.store.loadHourly();
-    for (const c of cells) {
+    const allCells: HeatmapCell[] = this.store.loadHourly();
+    for (const c of allCells) {
+      if (!windowDates.has(c.date)) {
+        continue;
+      }
       if (c.hour >= 0 && c.hour < 24) {
         hourly[c.hour] = hourly[c.hour] + c.count;
       }
     }
     r.hourlyDistribution = hourly;
+
+    // 热力图行窗口：日报取近 7 天做上下文
+    //
+    // 日报的 daily 只有「今天」1 天，热力图会退化成一条 24 格细带，
+    // 既看不出作息形状，页面上也显得空。这里单独给一条 7 天行窗口，
+    // 今天固定落在最后一行；周报 / 月报本来就是多行，直接用本期窗口。
+    const heatDays: number = period === 'day' ? 7 : days;
+    const heatWin: ActivityDaily[] = all.slice(Math.max(0, all.length - heatDays));
+    const heatDates: Set<string> = new Set<string>();
+    for (const d of heatWin) {
+      heatDates.add(d.date);
+    }
+    const cells: HeatmapCell[] = [];
+    for (const c of allCells) {
+      if (!heatDates.has(c.date)) {
+        continue;
+      }
+      cells.push(c);
+    }
+    // 演示模式：把「今天已经过去的小时」按种子作息补齐
+    if (IotDaConfig.DEMO_MODE && heatWin.length > 0) {
+      this.fillTodayCells(cells, heatWin[heatWin.length - 1].date);
+    }
+    const heatDateList: string[] = [];
+    for (const d of heatWin) {
+      heatDateList.push(d.date);
+    }
+    r.heatmapDates = heatDateList;
 
     let activeHours: number = 0;
     let firstHour: number = -1;
@@ -923,6 +1155,37 @@ export class IotDaCloudAdapter implements CloudApi {
   private hhmm(hour: number): string {
     const h: string = hour < 10 ? `0${hour}` : `${hour}`;
     return `${h}:00`;
+  }
+
+  /**
+   * 演示模式：补齐「今天」已过去小时的活动格子。
+   *
+   * 板子每 4 秒才上报一次，PIR 触发本身又稀疏，今天这一行常常只有一两个格子，
+   * 周报 / 月报的最后一行于是整片空白，截图和答辩都没法看。
+   * 这里按种子作息把「已经过去的小时」补上，未来的小时一律不补 ——
+   * 否则会出现「现在才凌晨 1 点，图上却已经有晚上 8 点活动」这种穿帮。
+   *
+   * 只改内存里的报表，不落库：IotDaConfig.DEMO_MODE 关掉即恢复真实数据。
+   */
+  private fillTodayCells(cells: HeatmapCell[], today: string): void {
+    const nowH: number = new Date().getHours();
+    const seed: number[] = DemoDataSeeder.hourlyOf(today);
+    const have: Set<number> = new Set<number>();
+    for (const c of cells) {
+      if (c.date === today) {
+        have.add(c.hour);
+      }
+    }
+    for (let h: number = 0; h <= nowH; h++) {
+      if (have.has(h) || seed[h] <= 0) {
+        continue;
+      }
+      const cell: HeatmapCell = new HeatmapCell();
+      cell.date = today;
+      cell.hour = h;
+      cell.count = seed[h];
+      cells.push(cell);
+    }
   }
 
   async getSafetyLogs(query: SafetyLogQuery): Promise<PageData<SafetyLogEntry>> {

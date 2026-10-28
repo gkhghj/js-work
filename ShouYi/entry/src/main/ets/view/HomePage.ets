@@ -5,6 +5,7 @@ import { DeviceListItem, PushMessage } from '../cloud/CloudTypes';
 import { CareService } from '../service/CareService';
 import { NetworkMonitor } from '../service/NetworkMonitor';
 import { AppColor, AppSize } from '../common/constants/ThemeColors';
+import { ThemeMode, ThemeStore } from '../common/theme/ThemeStore';
 import { AlertLevel, AlertStatus } from '../common/constants/AppConstants';
 import { DateUtil } from '../common/utils/DateUtil';
 import { Logger } from '../common/utils/Logger';
@@ -41,6 +42,13 @@ class QuickEntry {
  */
 @Component
 export struct HomePage {
+
+  /**
+   * 订阅显示设置。@StorageProp 会在主题 / 关怀模式变化时触发本组件重渲染，
+   * 这样 ThemeStore 一改，AppColor / AppSize 的 getter 重新取值，全页同步换肤。
+   */
+  @StorageProp('displayMode') displayMode: string = 'day';
+  @StorageProp('careMode') careMode: boolean = false;
   private static readonly MODULE: string = 'HomePage';
 
   /** 切换底部 Tab 的回调，由 Index 注入 */
@@ -57,10 +65,20 @@ export struct HomePage {
 
   /** 演示场景切换后重新拉取，理由同 DeviceOverviewPage */
   @StorageLink('demoScenarioTick') @Watch('onDemoScenarioTick') demoTick: number = 0;
+  /**
+   * 页签切换广播。Tabs 会缓存页签，aboutToAppear 终生只跑一次，
+   * 所以每次回到首页都要靠这个信号重新拉待处理告警 ——
+   * 否则在预警中心处置完回来，首页的待处理数还停在旧值。
+   */
+  @StorageLink('alertRefreshTick') @Watch('onAlertRefreshTick') alertTick: number = 0;
 
   private service: CareService = new CareService();
 
   onDemoScenarioTick(): void {
+    this.load();
+  }
+
+  onAlertRefreshTick(): void {
     this.load();
   }
 
@@ -177,7 +195,7 @@ export struct HomePage {
     family.title = '家庭成员';
     family.hint = this.memberCount > 0 ? `${this.memberCount} 位成员` : '角色与权限';
     family.glyph = '家';
-    family.tint = AppColor.PRIMARY;
+    family.tint = AppColor.ACCENT;
     family.bg = 'rgba(31,58,95,0.10)';
     family.target = 4;
     list.push(family);
@@ -185,160 +203,185 @@ export struct HomePage {
     return list;
   }
 
+  /**
+   * 主题签名：日间/夜间 × 关怀模式，四种组合各走一支。
+   *
+   * 每一支都调用同一个 @Builder pageRoot()。主题任一维度变化都会换分支，
+   * ArkUI 随之销毁旧子树、重建新子树 —— 这是必须的：
+   * AppColor / AppSize 是静态 getter，ArkTS 追踪不到它们内部读的 AppStorage，
+   * 所以「没有依赖被追踪状态」的属性表达式切主题时不会重新求值。
+   * 只有整棵子树重建，静态 getter 才会拿到新值。
+   */
+
   build() {
-    Column() {
-      // ---------- 顶部标题 ----------
-      Row() {
-        Column() {
-          Text('守颐')
-            .fontSize(24)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(AppColor.CARD)
-          Text('居家安全 · 实时守护')
-            .fontSize(AppSize.SMALL_FONT)
-            .fontColor('rgba(255,255,255,0.7)')
-            .margin({ top: 4 })
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
+    if (this.displayMode === ThemeMode.NIGHT && this.careMode) {
+      this.pageRoot();
+    } else if (this.displayMode === ThemeMode.NIGHT) {
+      this.pageRoot();
+    } else if (this.careMode) {
+      this.pageRoot();
+    } else {
+      this.pageRoot();
+    }
+  }
 
-        if (this.pendingAlerts.length > 0) {
-          Column() {
-            Text(`${this.pendingAlerts.length}`)
-              .fontSize(16)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(AppColor.CARD)
-            Text('待处置')
-              .fontSize(10)
-              .fontColor('rgba(255,255,255,0.8)')
-          }
-          .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-          .backgroundColor(AppColor.DANGER)
-          .borderRadius(AppSize.SMALL_RADIUS)
-        }
-      }
-      .width('100%')
-      .padding(20)
-      .backgroundColor(AppColor.PRIMARY)
-      .borderRadius({ bottomLeft: 16, bottomRight: 16 })
-
-      // ---------- 离线提示 ----------
-      if (!this.online) {
-        Row() {
-          Text('当前离线 · 展示的是最近一次同步的数据，设备端本地守护不受影响')
-            .fontSize(AppSize.SMALL_FONT)
-            .fontColor(AppColor.TEXT)
-        }
-        .width('100%')
-        .padding(10)
-        .backgroundColor('rgba(224,138,0,0.14)')
-      }
-
-      // ---------- 推送横幅 ----------
-      if (this.pushBanner !== undefined) {
+  @Builder
+  pageRoot() {
+      Column() {
+        // ---------- 顶部标题 ----------
         Row() {
           Column() {
-            Text(CareService.buildPushTitle(this.pushBanner))
-              .fontSize(AppSize.CAPTION_FONT)
+            Text('鸿星伴护')
+              .fontSize(AppSize.HEADER_FONT)
               .fontWeight(FontWeight.Bold)
-              .fontColor(AppColor.CARD)
-            Text(this.pushBanner.body)
+              .fontColor(AppColor.ON_PRIMARY)
+            Text('居家安全 · 实时守护')
               .fontSize(AppSize.SMALL_FONT)
-              .fontColor('rgba(255,255,255,0.85)')
+              .fontColor('rgba(255,255,255,0.7)')
               .margin({ top: 4 })
-              .maxLines(2)
           }
           .alignItems(HorizontalAlign.Start)
           .layoutWeight(1)
 
-          Text('关闭')
-            .fontSize(AppSize.SMALL_FONT)
-            .fontColor('rgba(255,255,255,0.8)')
-            .onClick(() => {
-              this.pushBanner = undefined;
-            })
+          if (this.pendingAlerts.length > 0) {
+            Column() {
+              Text(`${this.pendingAlerts.length}`)
+                .fontSize(16)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(AppColor.ON_PRIMARY)
+              Text('待处置')
+                .fontSize(10)
+                .fontColor('rgba(255,255,255,0.8)')
+            }
+            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+            .backgroundColor(AppColor.DANGER)
+            .borderRadius(AppSize.SMALL_RADIUS)
+          }
         }
         .width('100%')
-        .padding(14)
-        .backgroundColor(AppColor.levelColor(this.pushBanner.level))
-      }
+        .padding(20)
+        .backgroundColor(AppColor.HEADER_BG)
+        .borderRadius({ bottomLeft: 16, bottomRight: 16 })
 
-      Scroll() {
-        Column() {
-          // ---------- 主卡：有没有待处理 ----------
-          this.statusCard()
-
-          // ---------- 宫格入口 ----------
-          Text('常用功能')
-            .fontSize(AppSize.SUBTITLE_FONT)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(AppColor.TEXT)
-            .width('100%')
-            .margin({ top: 18, bottom: 10 })
-
-          Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.SpaceBetween }) {
-            ForEach(this.quickEntries(), (entry: QuickEntry) => {
-              Column() {
-                this.entryTile(entry)
-              }
-              .width('48%')
-              .margin({ bottom: 10 })
-            }, (entry: QuickEntry) => `${entry.key}_${entry.hint}`)
+        // ---------- 离线提示 ----------
+        if (!this.online) {
+          Row() {
+            Text('当前离线 · 展示的是最近一次同步的数据，设备端本地守护不受影响')
+              .fontSize(AppSize.SMALL_FONT)
+              .fontColor(AppColor.TEXT)
           }
           .width('100%')
+          .padding(10)
+          .backgroundColor('rgba(224,138,0,0.14)')
+        }
 
-          // ---------- 最近预警 ----------
+        // ---------- 推送横幅 ----------
+        if (this.pushBanner !== undefined) {
           Row() {
-            Text('最近预警')
-              .fontSize(AppSize.SUBTITLE_FONT)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(AppColor.TEXT)
-              .layoutWeight(1)
-            Text('查看全部 ›')
+            Column() {
+              Text(CareService.buildPushTitle(this.pushBanner))
+                .fontSize(AppSize.CAPTION_FONT)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(AppColor.ON_PRIMARY)
+              Text(this.pushBanner.body)
+                .fontSize(AppSize.SMALL_FONT)
+                .fontColor('rgba(255,255,255,0.85)')
+                .margin({ top: 4 })
+                .maxLines(2)
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
+
+            Text('关闭')
               .fontSize(AppSize.SMALL_FONT)
-              .fontColor(AppColor.TEXT_3)
+              .fontColor('rgba(255,255,255,0.8)')
               .onClick(() => {
-                this.onNavigate(3);
+                this.pushBanner = undefined;
               })
           }
           .width('100%')
-          .margin({ top: 12, bottom: 10 })
+          .padding(14)
+          .backgroundColor(AppColor.levelColor(this.pushBanner.level))
+        }
 
-          if (this.pendingAlerts.length === 0) {
-            Column() {
-              Text('暂无待处置预警')
-                .fontSize(AppSize.CAPTION_FONT)
-                .fontColor(AppColor.TEXT_3)
-              Text('设备运行正常')
-                .fontSize(AppSize.SMALL_FONT)
-                .fontColor(AppColor.TEXT_3)
-                .margin({ top: 6 })
+        Scroll() {
+          Column() {
+            // ---------- 主卡：有没有待处理 ----------
+            this.statusCard()
+
+            // ---------- 宫格入口 ----------
+            Text('常用功能')
+              .fontSize(AppSize.SUBTITLE_FONT)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(AppColor.TEXT)
+              .width('100%')
+              .margin({ top: 18, bottom: 10 })
+
+            Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.SpaceBetween }) {
+              ForEach(this.quickEntries(), (entry: QuickEntry) => {
+                Column() {
+                  this.entryTile(entry)
+                }
+                .width('48%')
+                .margin({ bottom: 10 })
+              }, (entry: QuickEntry) => `${entry.key}_${entry.hint}`)
             }
             .width('100%')
-            .padding({ top: 26, bottom: 26 })
-            .backgroundColor(AppColor.CARD)
-            .borderRadius(AppSize.CARD_RADIUS)
-          } else {
-            // 首页只给最近两条，避免把首页又做成第二个预警中心
-            ForEach(this.pendingAlerts.slice(0, 2), (alert: Alert) => {
-              this.alertLine(alert)
-            // key 含 status/处置结果：与预警中心同理，标记已处置后列表状态要刷新
-            }, (alert: Alert) => `${alert.alertId}_${alert.status}_`
-              + (alert.handle !== undefined ? alert.handle.resultName : ''))
-          }
 
-          Blank().height(20)
+            // ---------- 最近预警 ----------
+            Row() {
+              Text('最近预警')
+                .fontSize(AppSize.SUBTITLE_FONT)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(AppColor.TEXT)
+                .layoutWeight(1)
+              Text('查看全部 ›')
+                .fontSize(AppSize.SMALL_FONT)
+                .fontColor(AppColor.TEXT_3)
+                .onClick(() => {
+                  this.onNavigate(3);
+                })
+            }
+            .width('100%')
+            .margin({ top: 12, bottom: 10 })
+
+            if (this.pendingAlerts.length === 0) {
+              Column() {
+                Text('暂无待处置预警')
+                  .fontSize(AppSize.CAPTION_FONT)
+                  .fontColor(AppColor.TEXT_3)
+                Text('设备运行正常')
+                  .fontSize(AppSize.SMALL_FONT)
+                  .fontColor(AppColor.TEXT_3)
+                  .margin({ top: 6 })
+              }
+              .width('100%')
+              .padding({ top: 26, bottom: 26 })
+              .backgroundColor(AppColor.CARD)
+              .borderRadius(AppSize.CARD_RADIUS)
+            } else {
+              // 首页只给最近两条，避免把首页又做成第二个预警中心
+              ForEach(this.pendingAlerts.slice(0, 2), (alert: Alert) => {
+                this.alertLine(alert)
+              // key 含 status/处置结果：与预警中心同理，标记已处置后列表状态要刷新
+              }, (alert: Alert) => `${alert.alertId}_${alert.status}_`
+                + (alert.handle !== undefined ? alert.handle.resultName : ''))
+            }
+
+            Blank().height(20)
+          }
+          .width('100%')
+          .padding(AppSize.PAGE_PADDING)
         }
-        .width('100%')
-        .padding(AppSize.PAGE_PADDING)
+        .layoutWeight(1)
+        .scrollBar(BarState.Off)
       }
-      .layoutWeight(1)
-      .scrollBar(BarState.Off)
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(AppColor.BG)
+      .width('100%')
+      .height('100%')
+      .backgroundColor(AppColor.BG)
+
   }
+
 
   /** 主卡：一句话回答"有没有待处理" */
   @Builder
@@ -360,24 +403,27 @@ export struct HomePage {
       .alignItems(VerticalAlign.Center)
 
       Text(this.pendingTitle())
-        .fontSize(26)
+        .fontSize(AppSize.BIG_FONT)
         .fontWeight(FontWeight.Bold)
         .fontColor(this.pendingAlerts.length > 0 ? AppColor.DANGER : AppColor.TEXT)
         .margin({ top: 10 })
         .width('100%')
 
-      Text(this.pendingSub())
-        .fontSize(AppSize.CAPTION_FONT)
-        .fontColor(AppColor.TEXT_2)
-        .lineHeight(20)
-        .margin({ top: 8 })
-        .width('100%')
+      // 关怀模式：只保留「有没有待处理」和数量，说明性文字属于次要信息，收起
+      if (!ThemeStore.careOn()) {
+        Text(this.pendingSub())
+          .fontSize(AppSize.CAPTION_FONT)
+          .fontColor(AppColor.TEXT_2)
+          .lineHeight(20)
+          .margin({ top: 8 })
+          .width('100%')
+      }
 
       if (this.pendingAlerts.length > 0) {
         Text('去处置 →')
           .fontSize(AppSize.CAPTION_FONT)
           .fontWeight(FontWeight.Medium)
-          .fontColor(AppColor.CARD)
+          .fontColor(AppColor.ON_PRIMARY)
           .backgroundColor(AppColor.DANGER)
           .padding({ left: 18, right: 18, top: 9, bottom: 9 })
           .borderRadius(18)
@@ -401,12 +447,12 @@ export struct HomePage {
       Row() {
         Row() {
           Text(entry.glyph)
-            .fontSize(15)
+            .fontSize(AppSize.GLYPH_FONT)
             .fontWeight(FontWeight.Bold)
             .fontColor(entry.tint)
         }
-        .width(34)
-        .height(34)
+        .width(AppSize.GLYPH_BOX)
+        .height(AppSize.GLYPH_BOX)
         .justifyContent(FlexAlign.Center)
         .alignItems(VerticalAlign.Center)
         .backgroundColor(entry.bg)
@@ -428,13 +474,16 @@ export struct HomePage {
         .margin({ top: 10 })
         .width('100%')
 
-      Text(entry.hint)
-        .fontSize(AppSize.SMALL_FONT)
-        .fontColor(AppColor.TEXT_3)
-        .margin({ top: 3 })
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .width('100%')
+      // 关怀模式：宫格只留标题，hint 是次要信息，收起
+      if (!ThemeStore.careOn()) {
+        Text(entry.hint)
+          .fontSize(AppSize.SMALL_FONT)
+          .fontColor(AppColor.TEXT_3)
+          .margin({ top: 3 })
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+      }
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)

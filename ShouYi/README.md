@@ -1,4 +1,4 @@
-# 守颐 —— 独居老人居家安全监测与应急辅助系统
+# 鸿星伴护 —— 独居老人居家安全监测与应急辅助系统
 
 > 第三届河南省高等学校信息技术应用创新大赛（开源鸿蒙）赛题四 参赛作品
 >
@@ -39,9 +39,20 @@ Mock 数据是**确定性生成**的（固定种子），并刻意贴合真实�
 ### 如何跑起来
 
 1. 用 DevEco Studio 5.0 打开本目录（`ShouYi` 为工程根目录）
-2. 等待 hvigor 同步完成
-3. `File → Project Structure → Signing Configs` 配置自动签名
-4. 选手机或平板模拟器，运行
+2. **配置云凭据**（只在连接真实开发板时需要，纯 Mock 演示可跳过）
+
+   仓库里不含华为云账号密码。从模板复制一份本地文件：
+
+       cp entry/src/main/ets/cloud/IotDaSecret.example.ets \
+          entry/src/main/ets/cloud/IotDaSecret.ets
+
+   然后把 `IotDaSecret.ets` 里的 `DOMAIN_NAME` / `USER_NAME` / `PASSWORD`
+   填成自己的 IAM 子用户凭据。该文件已写进 `.gitignore`，不会被提交。
+   不填的话 App 仍能启动，只是连华为云时 IAM 换 token 会 401。
+
+3. 等待 hvigor 同步完成
+4. `File → Project Structure → Signing Configs` 配置自动签名
+5. 选手机或平板模拟器，运行
 
 ---
 

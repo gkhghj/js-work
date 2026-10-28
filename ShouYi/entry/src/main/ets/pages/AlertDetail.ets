@@ -2,6 +2,7 @@ import { Alert, AlertTimelineNode, ThresholdSuggestion } from '../model/Alert';
 import { CareService } from '../service/CareService';
 import { AlertLevel, AlertStatus, AlertType, HandleResult } from '../common/constants/AppConstants';
 import { AppColor, AppSize } from '../common/constants/ThemeColors';
+import { ThemeMode, ThemeStore } from '../common/theme/ThemeStore';
 import { DateUtil } from '../common/utils/DateUtil';
 import { Logger } from '../common/utils/Logger';
 
@@ -29,6 +30,13 @@ class AlertDetailParams {
 @Entry
 @Component
 struct AlertDetail {
+
+  /**
+   * 订阅显示设置。@StorageProp 会在主题 / 关怀模式变化时触发本组件重渲染，
+   * 这样 ThemeStore 一改，AppColor / AppSize 的 getter 重新取值，全页同步换肤。
+   */
+  @StorageProp('displayMode') displayMode: string = 'day';
+  @StorageProp('careMode') careMode: boolean = false;
   private static readonly MODULE: string = 'AlertDetail';
 
   @State alert: Alert | undefined = undefined;
@@ -160,54 +168,79 @@ struct AlertDetail {
     }
   }
 
-  build() {
-    Column() {
-      this.topBar()
+  /**
+   * 主题签名：日间/夜间 × 关怀模式，四种组合各走一支。
+   *
+   * 每一支都调用同一个 @Builder pageRoot()。主题任一维度变化都会换分支，
+   * ArkUI 随之销毁旧子树、重建新子树 —— 这是必须的：
+   * AppColor / AppSize 是静态 getter，ArkTS 追踪不到它们内部读的 AppStorage，
+   * 所以「没有依赖被追踪状态」的属性表达式切主题时不会重新求值。
+   * 只有整棵子树重建，静态 getter 才会拿到新值。
+   */
 
-      if (this.loading) {
-        Column() {
-          LoadingProgress().width(40).height(40).color(AppColor.PRIMARY)
-          Text('加载中…')
-            .fontSize(AppSize.CAPTION_FONT)
-            .fontColor(AppColor.TEXT_3)
-            .margin({ top: 10 })
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .justifyContent(FlexAlign.Center)
-      } else if (this.alert === undefined) {
-        Column() {
-          Text('未找到该预警记录')
-            .fontSize(AppSize.BODY_FONT)
-            .fontColor(AppColor.TEXT_3)
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .justifyContent(FlexAlign.Center)
-      } else {
-        Scroll() {
+  build() {
+    if (this.displayMode === ThemeMode.NIGHT && this.careMode) {
+      this.pageRoot();
+    } else if (this.displayMode === ThemeMode.NIGHT) {
+      this.pageRoot();
+    } else if (this.careMode) {
+      this.pageRoot();
+    } else {
+      this.pageRoot();
+    }
+  }
+
+  @Builder
+  pageRoot() {
+      Column() {
+        this.topBar()
+
+        if (this.loading) {
           Column() {
-            this.alertCard(this.alert)
-            this.timelineCard()
-            if (this.alert.isPending()) {
-              this.handleSection()
-            } else {
-              this.handledSummary(this.alert)
-            }
-            // 底部留白（Scroll 内不用 Blank，避免依赖父容器确定高度）
-            Column().width('100%').height(24)
+            LoadingProgress().width(40).height(40).color(AppColor.ACCENT)
+            Text('加载中…')
+              .fontSize(AppSize.CAPTION_FONT)
+              .fontColor(AppColor.TEXT_3)
+              .margin({ top: 10 })
           }
           .width('100%')
-          .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING })
+          .layoutWeight(1)
+          .justifyContent(FlexAlign.Center)
+        } else if (this.alert === undefined) {
+          Column() {
+            Text('未找到该预警记录')
+              .fontSize(AppSize.BODY_FONT)
+              .fontColor(AppColor.TEXT_3)
+          }
+          .width('100%')
+          .layoutWeight(1)
+          .justifyContent(FlexAlign.Center)
+        } else {
+          Scroll() {
+            Column() {
+              this.alertCard(this.alert)
+              this.timelineCard()
+              if (this.alert.isPending()) {
+                this.handleSection()
+              } else {
+                this.handledSummary(this.alert)
+              }
+              // 底部留白（Scroll 内不用 Blank，避免依赖父容器确定高度）
+              Column().width('100%').height(24)
+            }
+            .width('100%')
+            .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING })
+          }
+          .layoutWeight(1)
+          .scrollBar(BarState.Off)
         }
-        .layoutWeight(1)
-        .scrollBar(BarState.Off)
       }
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(AppColor.BG)
+      .width('100%')
+      .height('100%')
+      .backgroundColor(AppColor.BG)
+
   }
+
 
   // ==================== 顶部栏 ====================
 
@@ -216,14 +249,14 @@ struct AlertDetail {
     Row() {
       Text('‹ 返回')
         .fontSize(AppSize.BODY_FONT)
-        .fontColor(AppColor.CARD)
+        .fontColor(AppColor.ON_PRIMARY)
         .onClick(() => {
           this.back();
         })
       Text('预警详情')
         .fontSize(AppSize.SUBTITLE_FONT)
         .fontWeight(FontWeight.Bold)
-        .fontColor(AppColor.CARD)
+        .fontColor(AppColor.ON_PRIMARY)
         .layoutWeight(1)
         .textAlign(TextAlign.Center)
       // 右侧占位，保证标题居中
@@ -231,7 +264,7 @@ struct AlertDetail {
     }
     .width('100%')
     .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-    .backgroundColor(AppColor.PRIMARY)
+    .backgroundColor(AppColor.HEADER_BG)
   }
 
   // ==================== 告警信息卡 ====================
@@ -245,7 +278,7 @@ struct AlertDetail {
           Text('紧急事件 · 请立即处理')
             .fontSize(AppSize.CAPTION_FONT)
             .fontWeight(FontWeight.Bold)
-            .fontColor(AppColor.CARD)
+            .fontColor(AppColor.ON_PRIMARY)
         }
         .width('100%')
         .padding({ left: 14, right: 14, top: 8, bottom: 8 })
@@ -262,7 +295,7 @@ struct AlertDetail {
             .layoutWeight(1)
           Text(AlertLevel.labelOf(alert.level))
             .fontSize(AppSize.SMALL_FONT)
-            .fontColor(AppColor.CARD)
+            .fontColor(AppColor.ON_PRIMARY)
             .backgroundColor(AppColor.levelColor(alert.level))
             .padding({ left: 8, right: 8, top: 3, bottom: 3 })
             .borderRadius(4)
@@ -279,14 +312,18 @@ struct AlertDetail {
 
         this.infoRow('设备', alert.deviceName)
         this.infoRow('触发时间', DateUtil.format(alert.timestamp))
-        if (alert.triggerValue > 0) {
-          this.infoRow('实测值', `${alert.triggerValue}`)
-        }
-        if (alert.threshold > 0) {
-          this.infoRow('触发阈值', `${alert.threshold}`)
+        // 关怀模式：实测值 / 阈值 / 推送对象属于诊断细节，收起；
+        // 只留「哪台设备、什么时候、现在什么状态」这三条最关键信息。
+        if (!ThemeStore.careOn()) {
+          if (alert.triggerValue > 0) {
+            this.infoRow('实测值', `${alert.triggerValue}`)
+          }
+          if (alert.threshold > 0) {
+            this.infoRow('触发阈值', `${alert.threshold}`)
+          }
         }
         this.infoRow('当前状态', AlertStatus.labelOf(alert.status))
-        if (alert.notifiedRoles.length > 0) {
+        if (!ThemeStore.careOn() && alert.notifiedRoles.length > 0) {
           this.infoRow('已推送至', alert.notifiedRoles.map((r: string) => {
             return this.roleLabel(r);
           }).join('、'))
@@ -363,14 +400,14 @@ struct AlertDetail {
               .height(10)
               .borderRadius(5)
               .backgroundColor(index === this.timeline.length - 1
-                ? AppColor.PRIMARY : AppColor.SECONDARY)
+                ? AppColor.ACCENT : AppColor.SECONDARY)
               .margin({ top: 4 })
 
             Column() {
               Row() {
                 Text(AlertTimelineNode.eventLabel(node.event))
                   .fontSize(AppSize.SMALL_FONT)
-                  .fontColor(AppColor.CARD)
+                  .fontColor(AppColor.ON_PRIMARY)
                   .backgroundColor(AppColor.PRIMARY)
                   .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                   .borderRadius(4)
@@ -424,7 +461,7 @@ struct AlertDetail {
           .height(42)
           .fontSize(AppSize.BODY_FONT)
           .backgroundColor(AppColor.SURFACE)
-          .fontColor(AppColor.PRIMARY)
+          .fontColor(AppColor.ACCENT)
           .borderRadius(AppSize.SMALL_RADIUS)
           .enabled(!this.submitting)
           .margin({ top: 12 })
@@ -444,7 +481,7 @@ struct AlertDetail {
         ForEach(HandleResult.all(), (result: string) => {
           Text(HandleResult.labelOf(result))
             .fontSize(AppSize.CAPTION_FONT)
-            .fontColor(this.selectedResult === result ? AppColor.CARD : AppColor.TEXT_2)
+            .fontColor(this.selectedResult === result ? AppColor.ON_PRIMARY: AppColor.TEXT_2)
             .backgroundColor(this.selectedResult === result ? AppColor.PRIMARY : AppColor.SURFACE)
             .padding({ left: 12, right: 12, top: 8, bottom: 8 })
             .borderRadius(16)
@@ -527,7 +564,7 @@ struct AlertDetail {
       Row() {
         Text('已处置')
           .fontSize(AppSize.SMALL_FONT)
-          .fontColor(AppColor.CARD)
+          .fontColor(AppColor.ON_PRIMARY)
           .backgroundColor(AppColor.SUCCESS)
           .padding({ left: 8, right: 8, top: 3, bottom: 3 })
           .borderRadius(4)

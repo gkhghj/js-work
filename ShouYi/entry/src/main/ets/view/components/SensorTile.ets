@@ -2,6 +2,7 @@ import { Sensor } from '../../model/Device';
 import { AppColor, AppSize } from '../../common/constants/ThemeColors';
 import { SensorType } from '../../common/constants/AppConstants';
 
+import { ThemeMode, ThemeStore } from '../../common/theme/ThemeStore';
 /**
  * 传感器状态卡片 —— 全应用统一模板。
  *
@@ -18,50 +19,82 @@ import { SensorType } from '../../common/constants/AppConstants';
  */
 @Component
 export struct SensorTile {
+
+  /**
+   * 订阅显示设置。@StorageProp 会在主题 / 关怀模式变化时触发本组件重渲染，
+   * 这样 ThemeStore 一改，AppColor / AppSize 的 getter 重新取值，全页同步换肤。
+   */
+  @StorageProp('displayMode') displayMode: string = 'day';
+  @StorageProp('careMode') careMode: boolean = false;
   @Prop sensor: Sensor;
 
+  /**
+   * 主题签名：日间/夜间 × 关怀模式，四种组合各走一支。
+   *
+   * 每一支都调用同一个 @Builder pageRoot()。主题任一维度变化都会换分支，
+   * ArkUI 随之销毁旧子树、重建新子树 —— 这是必须的：
+   * AppColor / AppSize 是静态 getter，ArkTS 追踪不到它们内部读的 AppStorage，
+   * 所以「没有依赖被追踪状态」的属性表达式切主题时不会重新求值。
+   * 只有整棵子树重建，静态 getter 才会拿到新值。
+   */
+
   build() {
-    Column() {
-      // ---------- 第一行：图标 + 主标题 + 状态圆点 ----------
-      Row() {
-        this.tileIcon()
+    if (this.displayMode === ThemeMode.NIGHT && this.careMode) {
+      this.pageRoot();
+    } else if (this.displayMode === ThemeMode.NIGHT) {
+      this.pageRoot();
+    } else if (this.careMode) {
+      this.pageRoot();
+    } else {
+      this.pageRoot();
+    }
+  }
 
-        Text(this.sensor.name)
-          .fontSize(AppSize.CAPTION_FONT)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(AppColor.statusTextColor(this.sensor.status()))
-          .margin({ left: 6 })
-          .maxLines(1)
+  @Builder
+  pageRoot() {
+      Column() {
+        // ---------- 第一行：图标 + 主标题 + 状态圆点 ----------
+        Row() {
+          this.tileIcon()
+
+          Text(this.sensor.name)
+            .fontSize(AppSize.CAPTION_FONT)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(AppColor.statusTextColor(this.sensor.status()))
+            .margin({ left: 6 })
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1)
+
+          // 状态圆点：三色体系 + 离线灰
+          Row()
+            .width(8)
+            .height(8)
+            .borderRadius(4)
+            .backgroundColor(AppColor.statusColor(this.sensor.status()))
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Center)
+
+        // ---------- 第二行：监测信息（标签：数值） ----------
+        // 离线时由 Sensor.infoText() 统一给出【设备离线】，不留空白
+        Text(this.sensor.infoText())
+          .fontSize(AppSize.SMALL_FONT)
+          .fontColor(this.infoColor())
+          .margin({ top: 8 })
+          .maxLines(2)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .layoutWeight(1)
-
-        // 状态圆点：三色体系 + 离线灰
-        Row()
-          .width(8)
-          .height(8)
-          .borderRadius(4)
-          .backgroundColor(AppColor.statusColor(this.sensor.status()))
+          .width('100%')
       }
       .width('100%')
-      .alignItems(VerticalAlign.Center)
+      .alignItems(HorizontalAlign.Start)
+      .padding(12)
+      .backgroundColor(AppColor.CARD)
+      .borderRadius(AppSize.SMALL_RADIUS)
+      .border({ width: 1, color: AppColor.statusBorder(this.sensor.status()) })
 
-      // ---------- 第二行：监测信息（标签：数值） ----------
-      // 离线时由 Sensor.infoText() 统一给出【设备离线】，不留空白
-      Text(this.sensor.infoText())
-        .fontSize(AppSize.SMALL_FONT)
-        .fontColor(this.infoColor())
-        .margin({ top: 8 })
-        .maxLines(2)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .width('100%')
-    }
-    .width('100%')
-    .alignItems(HorizontalAlign.Start)
-    .padding(12)
-    .backgroundColor(AppColor.CARD)
-    .borderRadius(AppSize.SMALL_RADIUS)
-    .border({ width: 1, color: AppColor.statusBorder(this.sensor.status()) })
   }
+
 
   /** 监测信息文字色：异常跟随状态色，常态保持次文本灰 */
   private infoColor(): string {
@@ -82,7 +115,7 @@ export struct SensorTile {
   tileIcon() {
     if (this.sensor.sensorType === SensorType.SOS_BUTTON) {
       Text('SOS')
-        .fontSize(9)
+        .fontSize(AppSize.TAG_FONT)
         .fontWeight(FontWeight.Medium)
         .letterSpacing(0.6)
         .fontColor(AppColor.statusIconColor(this.sensor.status()))
@@ -93,8 +126,9 @@ export struct SensorTile {
         })
         .padding({ left: 3, right: 3, top: 2, bottom: 2 })
     } else {
+      // 关怀模式下图标单独放大一档（AppSize.ICON_FONT），比正文字号放大更多
       Text(this.glyphOf(this.sensor.sensorType))
-        .fontSize(20)
+        .fontSize(AppSize.ICON_FONT)
         .fontWeight(FontWeight.Medium)
         .fontColor(AppColor.statusIconColor(this.sensor.status()))
     }

@@ -8,6 +8,7 @@ import { ReportExporter } from '../common/utils/ReportExporter';
 import { Logger } from '../common/utils/Logger';
 import { common } from '@kit.AbilityKit';
 
+import { ThemeMode, ThemeStore } from '../common/theme/ThemeStore';
 /** 筛选选项 */
 class FilterOption {
   key: string = '';
@@ -46,6 +47,13 @@ class AlertDetailParams {
  */
 @Component
 export struct AlertCenterPage {
+
+  /**
+   * 订阅显示设置。@StorageProp 会在主题 / 关怀模式变化时触发本组件重渲染，
+   * 这样 ThemeStore 一改，AppColor / AppSize 的 getter 重新取值，全页同步换肤。
+   */
+  @StorageProp('displayMode') displayMode: string = 'day';
+  @StorageProp('careMode') careMode: boolean = false;
   private static readonly MODULE: string = 'AlertCenterPage';
 
   @State alerts: Alert[] = [];
@@ -79,198 +87,223 @@ export struct AlertCenterPage {
     }
   }
 
+  /**
+   * 主题签名：日间/夜间 × 关怀模式，四种组合各走一支。
+   *
+   * 每一支都调用同一个 @Builder pageRoot()。主题任一维度变化都会换分支，
+   * ArkUI 随之销毁旧子树、重建新子树 —— 这是必须的：
+   * AppColor / AppSize 是静态 getter，ArkTS 追踪不到它们内部读的 AppStorage，
+   * 所以「没有依赖被追踪状态」的属性表达式切主题时不会重新求值。
+   * 只有整棵子树重建，静态 getter 才会拿到新值。
+   */
+
   build() {
-    Column() {
-      // ---------- 标题栏 ----------
-      Row() {
-        Text('预警中心')
-          .fontSize(AppSize.TITLE_FONT)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(AppColor.TEXT)
-          .layoutWeight(1)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(`共 ${this.alerts.length} 条预警记录`)
-          .fontSize(AppSize.SMALL_FONT)
-          .fontColor(AppColor.TEXT_3)
-          .margin({ right: 10 })
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
+    if (this.displayMode === ThemeMode.NIGHT && this.careMode) {
+      this.pageRoot();
+    } else if (this.displayMode === ThemeMode.NIGHT) {
+      this.pageRoot();
+    } else if (this.careMode) {
+      this.pageRoot();
+    } else {
+      this.pageRoot();
+    }
+  }
 
-        Text('模拟告警')
-          .fontSize(AppSize.SMALL_FONT)
-          .fontColor(AppColor.PRIMARY)
-          .border({ width: 1, color: AppColor.PRIMARY })
-          .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-          .borderRadius(14)
-          .margin({ right: 8 })
-          .opacity(this.busy ? 0.5 : 1)
-          .onClick(() => {
-            if (!this.busy) {
-              this.doInjectDemo();
-            }
-          })
-
-        Text('导出 PDF')
-          .fontSize(AppSize.CAPTION_FONT)
-          .fontColor(AppColor.CARD)
-          .backgroundColor(AppColor.PRIMARY)
-          .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-          .borderRadius(14)
-          .onClick(() => {
-            this.exportAlerts();
-          })
-      }
-      .width('100%')
-      .alignItems(VerticalAlign.Center)
-      .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING, top: AppSize.PAGE_PADDING })
-
-      // 判定口径说明。放在标题下方而不是页面底部 ——
-      // 家属第一眼就该知道这些提醒是怎么判出来的，否则只会当成噪音
-      Text('系统依据老人个性化作息基线智能判定，区分紧急告警与健康关注提示，减少误报警扰。')
-        .fontSize(AppSize.SMALL_FONT)
-        .fontColor(AppColor.TEXT_3)
-        .margin({ top: 8, bottom: 4 })
-        .lineHeight(17)
-        .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING })
-
-      // ---------- 第一行：处置状态 ----------
-      Flex({ wrap: FlexWrap.Wrap }) {
-        this.statusChip('', '全部')
-        this.statusChip(AlertStatus.PENDING, '待处置')
-        this.statusChip(AlertStatus.HANDLED, '已处置')
-        this.statusChip(AlertStatus.FALSE_ALARM, '误报')
-      }
-      .width('100%')
-      .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING, top: 10, bottom: 6 })
-
-      // ---------- 第二行：告警等级 ----------
-      // 用 wrap 而不是横向滚动：5 个等级标签必须同时可见，
-      // 滚动会让家属以为就只有前两个选项
-      Flex({ wrap: FlexWrap.Wrap }) {
-        this.levelChip('', '全部等级')
-        this.levelChip(AlertLevel.P0, '紧急')
-        this.levelChip(AlertLevel.P1, '高风险')
-        this.levelChip(AlertLevel.P2, '需关注')
-        this.levelChip(AlertLevel.P3, '提示')
-      }
-      .width('100%')
-      .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING, bottom: 12 })
-
-      // ---------- 批量操作（仅待处置页签、且有数据时出现） ----------
-      // 处置完的告警堆积是家属最头疼的点，所以给两个批量入口：
-      //   批量标记已处置 —— 一键把待处置全部闭环（保留记录，可追溯）
-      //   清空待处置     —— 直接删掉这批本地记录（弹二次确认，防误触）
-      if (this.statusFilter === AlertStatus.PENDING && this.alerts.length > 0) {
+  @Builder
+  pageRoot() {
+      Column() {
+        // ---------- 标题栏 ----------
         Row() {
-          Text(`待处置 ${this.alerts.length} 条`)
-            .fontSize(AppSize.SMALL_FONT)
-            .fontColor(AppColor.TEXT_3)
+          Text('预警中心')
+            .fontSize(AppSize.TITLE_FONT)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(AppColor.TEXT)
             .layoutWeight(1)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
-
-          Text('批量标记已处置')
+          Text(`共 ${this.alerts.length} 条预警记录`)
             .fontSize(AppSize.SMALL_FONT)
-            .fontColor(AppColor.PRIMARY)
-            .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-            .borderRadius(6)
+            .fontColor(AppColor.TEXT_3)
+            .margin({ right: 10 })
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+          Text('模拟告警')
+            .fontSize(AppSize.SMALL_FONT)
+            .fontColor(AppColor.ACCENT)
             .border({ width: 1, color: AppColor.PRIMARY })
+            .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+            .borderRadius(14)
             .margin({ right: 8 })
             .opacity(this.busy ? 0.5 : 1)
             .onClick(() => {
               if (!this.busy) {
-                this.doMarkAll();
+                this.doInjectDemo();
               }
             })
 
-          Text('清空待处置')
-            .fontSize(AppSize.SMALL_FONT)
-            .fontColor(AppColor.DANGER)
-            .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-            .borderRadius(6)
-            .border({ width: 1, color: AppColor.DANGER })
-            .opacity(this.busy ? 0.5 : 1)
+          Text('导出 PDF')
+            .fontSize(AppSize.CAPTION_FONT)
+            .fontColor(AppColor.ON_PRIMARY)
+            .backgroundColor(AppColor.PRIMARY)
+            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+            .borderRadius(14)
             .onClick(() => {
-              if (!this.busy) {
-                this.confirmClearPending();
-              }
+              this.exportAlerts();
             })
         }
         .width('100%')
         .alignItems(VerticalAlign.Center)
-        .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING, bottom: 10 })
-      }
+        .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING, top: AppSize.PAGE_PADDING })
 
-      // ---------- 列表 ----------
-      if (this.alerts.length === 0 && !this.loading) {
-        Column() {
-          Text('没有符合条件的预警记录')
-            .fontSize(AppSize.BODY_FONT)
-            .fontColor(AppColor.TEXT_3)
-          Text('换个筛选条件试试')
-            .fontSize(AppSize.CAPTION_FONT)
-            .fontColor(AppColor.TEXT_3)
-            .margin({ top: 8 })
+        // 判定口径说明。放在标题下方而不是页面底部 ——
+        // 家属第一眼就该知道这些提醒是怎么判出来的，否则只会当成噪音
+        Text('系统依据老人个性化作息基线智能判定，区分紧急告警与健康关注提示，减少误报警扰。')
+          .fontSize(AppSize.SMALL_FONT)
+          .fontColor(AppColor.TEXT_3)
+          .margin({ top: 8, bottom: 4 })
+          .lineHeight(17)
+          .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING })
+
+        // ---------- 第一行：处置状态 ----------
+        Flex({ wrap: FlexWrap.Wrap }) {
+          this.statusChip('', '全部')
+          this.statusChip(AlertStatus.PENDING, '待处置')
+          this.statusChip(AlertStatus.HANDLED, '已处置')
+          this.statusChip(AlertStatus.FALSE_ALARM, '误报')
         }
         .width('100%')
-        .padding({ top: 80 })
-        .layoutWeight(1)
-      } else {
-        List() {
-          ForEach(this.alerts, (alert: Alert) => {
-            ListItem() {
-              AlertCard({
-                alert: alert,
-                onOpen: (a: Alert) => {
-                  this.openDetail(a);
-                },
-                onChanged: () => {
-                  // 与首页一致：一键标记已处置后刷新列表，按钮收起
-                  this.load();
-                }
-              })
-            }
-            .margin({ bottom: 10 })
-          // key 含 status/处置结果：标记已处置后 load() 重建数组，
-          // 若只用 alertId，ForEach 会复用旧节点，状态徽标仍是"待处置"
-          }, (alert: Alert) => `${alert.alertId}_${alert.status}_`
-            + (alert.handle !== undefined ? alert.handle.resultName : ''))
+        .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING, top: 10, bottom: 6 })
 
-          // ---------- 列表底部说明 ----------
-          // 误报自学习是整套个性化基线能成立的关键，
-          // 这句话必须出现在列表末端 —— 家属标记完误报往下滑就能看到
-          ListItem() {
-            Text('标记为【误报】的记录，系统会自动学习，动态更新老人基线，持续降低后续误报率。')
+        // ---------- 第二行：告警等级 ----------
+        // 用 wrap 而不是横向滚动：5 个等级标签必须同时可见，
+        // 滚动会让家属以为就只有前两个选项
+        Flex({ wrap: FlexWrap.Wrap }) {
+          this.levelChip('', '全部等级')
+          this.levelChip(AlertLevel.P0, '紧急')
+          this.levelChip(AlertLevel.P1, '高风险')
+          this.levelChip(AlertLevel.P2, '需关注')
+          this.levelChip(AlertLevel.P3, '提示')
+        }
+        .width('100%')
+        .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING, bottom: 12 })
+
+        // ---------- 批量操作（仅待处置页签、且有数据时出现） ----------
+        // 处置完的告警堆积是家属最头疼的点，所以给两个批量入口：
+        //   批量标记已处置 —— 一键把待处置全部闭环（保留记录，可追溯）
+        //   清空待处置     —— 直接删掉这批本地记录（弹二次确认，防误触）
+        if (this.statusFilter === AlertStatus.PENDING && this.alerts.length > 0) {
+          Row() {
+            Text(`待处置 ${this.alerts.length} 条`)
               .fontSize(AppSize.SMALL_FONT)
               .fontColor(AppColor.TEXT_3)
-              .lineHeight(18)
-              .width('100%')
-              .padding({ top: 4, bottom: 12 })
-          }
+              .layoutWeight(1)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
 
-          ListItem() {
-            // 列表尾留白。不能用 Blank —— 它只能嵌在 Row/Column/Flex 里，
-            // 直接放在 ListItem 下会报 10905201。
-            Row().width('100%').height(16)
+            Text('批量标记已处置')
+              .fontSize(AppSize.SMALL_FONT)
+              .fontColor(AppColor.ACCENT)
+              .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+              .borderRadius(6)
+              .border({ width: 1, color: AppColor.PRIMARY })
+              .margin({ right: 8 })
+              .opacity(this.busy ? 0.5 : 1)
+              .onClick(() => {
+                if (!this.busy) {
+                  this.doMarkAll();
+                }
+              })
+
+            Text('清空待处置')
+              .fontSize(AppSize.SMALL_FONT)
+              .fontColor(AppColor.DANGER)
+              .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+              .borderRadius(6)
+              .border({ width: 1, color: AppColor.DANGER })
+              .opacity(this.busy ? 0.5 : 1)
+              .onClick(() => {
+                if (!this.busy) {
+                  this.confirmClearPending();
+                }
+              })
           }
+          .width('100%')
+          .alignItems(VerticalAlign.Center)
+          .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING, bottom: 10 })
         }
-        .layoutWeight(1)
-        .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING })
-        .scrollBar(BarState.Off)
+
+        // ---------- 列表 ----------
+        if (this.alerts.length === 0 && !this.loading) {
+          Column() {
+            Text('没有符合条件的预警记录')
+              .fontSize(AppSize.BODY_FONT)
+              .fontColor(AppColor.TEXT_3)
+            Text('换个筛选条件试试')
+              .fontSize(AppSize.CAPTION_FONT)
+              .fontColor(AppColor.TEXT_3)
+              .margin({ top: 8 })
+          }
+          .width('100%')
+          .padding({ top: 80 })
+          .layoutWeight(1)
+        } else {
+          List() {
+            ForEach(this.alerts, (alert: Alert) => {
+              ListItem() {
+                AlertCard({
+                  alert: alert,
+                  onOpen: (a: Alert) => {
+                    this.openDetail(a);
+                  },
+                  onChanged: () => {
+                    // 与首页一致：一键标记已处置后刷新列表，按钮收起
+                    this.load();
+                  }
+                })
+              }
+              .margin({ bottom: 10 })
+            // key 含 status/处置结果：标记已处置后 load() 重建数组，
+            // 若只用 alertId，ForEach 会复用旧节点，状态徽标仍是"待处置"
+            }, (alert: Alert) => `${alert.alertId}_${alert.status}_`
+              + (alert.handle !== undefined ? alert.handle.resultName : ''))
+
+            // ---------- 列表底部说明 ----------
+            // 误报自学习是整套个性化基线能成立的关键，
+            // 这句话必须出现在列表末端 —— 家属标记完误报往下滑就能看到
+            ListItem() {
+              Text('标记为【误报】的记录，系统会自动学习，动态更新老人基线，持续降低后续误报率。')
+                .fontSize(AppSize.SMALL_FONT)
+                .fontColor(AppColor.TEXT_3)
+                .lineHeight(18)
+                .width('100%')
+                .padding({ top: 4, bottom: 12 })
+            }
+
+            ListItem() {
+              // 列表尾留白。不能用 Blank —— 它只能嵌在 Row/Column/Flex 里，
+              // 直接放在 ListItem 下会报 10905201。
+              Row().width('100%').height(16)
+            }
+          }
+          .layoutWeight(1)
+          .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING })
+          .scrollBar(BarState.Off)
+        }
       }
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(AppColor.BG)
+      .width('100%')
+      .height('100%')
+      .backgroundColor(AppColor.BG)
+
   }
+
 
   /** 处置状态标签。深蓝实心=选中 */
   @Builder
   statusChip(key: string, label: string) {
     Text(label)
       .fontSize(AppSize.CAPTION_FONT)
-      .fontColor(this.statusFilter === key ? AppColor.CARD : AppColor.TEXT_2)
+      .fontColor(this.statusFilter === key ? AppColor.ON_PRIMARY: AppColor.TEXT_2)
       .backgroundColor(this.statusFilter === key ? AppColor.PRIMARY : AppColor.CARD)
       .padding({ left: 14, right: 14, top: 7, bottom: 7 })
       .borderRadius(16)
@@ -295,7 +328,7 @@ export struct AlertCenterPage {
   levelChip(key: string, label: string) {
     Text(label)
       .fontSize(AppSize.SMALL_FONT)
-      .fontColor(this.levelFilter === key ? AppColor.CARD : this.levelChipTextColor(key))
+      .fontColor(this.levelFilter === key ? AppColor.ON_PRIMARY: this.levelChipTextColor(key))
       .backgroundColor(this.levelFilter === key ? this.levelChipColor(key) : AppColor.CARD)
       .padding({ left: 10, right: 10, top: 5, bottom: 5 })
       .borderRadius(14)

@@ -510,7 +510,7 @@ export class MockCloudAdapter implements CloudApi {
     for (let t = query.from; t <= query.to; t += stepMs) {
       points.push({
         timestamp: t,
-        value: this.readingValueOf(query.sensorType, t),
+        value: this.readingValueOf(query.sensorType, t, query.interval === '1d'),
         extra: {}
       });
     }
@@ -528,7 +528,7 @@ export class MockCloudAdapter implements CloudApi {
    * 用确定性函数（正弦 + 取模）而不是随机数：每次刷新曲线完全一致，
    * 演示时不会出现"刚讲完这张图，数据就变了"的尴尬。
    */
-  private readingValueOf(sensorType: string, t: number): number {
+  private readingValueOf(sensorType: string, t: number, daily: boolean = false): number {
     const h: number = DateUtil.hourOf(t);
     const day: number = Math.floor(t / 86400000);
     let v: number = 0;
@@ -538,10 +538,19 @@ export class MockCloudAdapter implements CloudApi {
         v = 22 + 3.5 * Math.sin((h - 8) / 24 * 2 * Math.PI);
         break;
       case SensorType.PIR:
+        if (daily) {
+          // 日聚合时按"这一天有没有活动"给值，否则整条曲线会是平的
+          v = (day * 41 % 100) < 92 ? 1 : 0;
+          break;
+        }
         // 白天有活动、夜间几乎为零
         v = (h >= 6 && h <= 21) ? 2 + Math.abs(Math.sin(h)) * 3 : 0;
         break;
       case SensorType.DOOR:
+        if (daily) {
+          v = (day * 37 % 100) < 88 ? 1 : 0;
+          break;
+        }
         // 一天开关若干次
         v = (h === 7 || h === 9 || h === 12 || h === 17 || h === 20) ? 1 : 0;
         break;
@@ -768,15 +777,25 @@ export class MockCloudAdapter implements CloudApi {
     }
 
     report.totalCount = total;
-    report.avgDailyCount = slice.length > 0 ? Math.round(total / slice.length * 10) / 10 : 0;
-    report.nightActivityCount = nightTotal;
+    report.avgDailyCount = slice.length > 0 ? Math.round(total / slice.length * 10) / 10 : 0;    report.nightActivityCount = nightTotal;
+    // 趋势图上下文：近 14 天（日报窗口只有 1 天，否则图上只有一个点）
+    const ctxWin: ActivityDaily[] = this.activityDaily.slice(Math.max(0, this.activityDaily.length - 14));
+    for (const d of ctxWin) {
+      report.dailyTrend.push({ date: d.date, count: d.totalCount } as TrendPoint);
+    }
     report.firstActivityTime = DateUtil.formatTime(firstTs);
     report.lastActivityTime = DateUtil.formatTime(lastTs);
     report.activeHours = hourly.filter((v: number) => v > 0.5).length;
     report.hourlyDistribution = hourly.map((v: number) => Math.round(v));
 
     // 热力图
-    for (const d of slice) {
+    //
+    // 日报的 daily 只有今天 1 天，热力图会退化成一条细带；
+    // 这里给日报一条 7 天行窗口做上下文，今天固定落在最后一行。
+    const heatDays: number = period === 'day' ? 7 : days;
+    const heatWin: ActivityDaily[] = this.activityDaily.slice(Math.max(0, this.activityDaily.length - heatDays));
+    for (const d of heatWin) {
+      report.heatmapDates.push(d.date);
       const avgPerHour: number = d.activeHours > 0 ? d.totalCount / d.activeHours : 0;
       for (let h = 0; h < 24; h++) {
         const c: number = Math.round(avgPerHour * MockCloudAdapter.hourWeight(h));

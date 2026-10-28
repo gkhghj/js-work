@@ -10,6 +10,7 @@ import { AlertLevel, HeartRateConst } from '../common/constants/AppConstants';
 import { DateUtil } from '../common/utils/DateUtil';
 import { Logger } from '../common/utils/Logger';
 
+import { ThemeMode, ThemeStore } from '../common/theme/ThemeStore';
 /**
  * 跳转传感器详情页的传参类型，必须与 SensorDetail 接收端保持一致。
  * ArkTS 不允许无类型对象字面量，两边都用显式 class。
@@ -30,6 +31,13 @@ class SensorDetailParams {
  */
 @Component
 export struct DeviceOverviewPage {
+
+  /**
+   * 订阅显示设置。@StorageProp 会在主题 / 关怀模式变化时触发本组件重渲染，
+   * 这样 ThemeStore 一改，AppColor / AppSize 的 getter 重新取值，全页同步换肤。
+   */
+  @StorageProp('displayMode') displayMode: string = 'day';
+  @StorageProp('careMode') careMode: boolean = false;
   private static readonly MODULE: string = 'DeviceOverviewPage';
 
   @State device: Device | undefined = undefined;
@@ -90,245 +98,270 @@ export struct DeviceOverviewPage {
     }
   }
 
+  /**
+   * 主题签名：日间/夜间 × 关怀模式，四种组合各走一支。
+   *
+   * 每一支都调用同一个 @Builder pageRoot()。主题任一维度变化都会换分支，
+   * ArkUI 随之销毁旧子树、重建新子树 —— 这是必须的：
+   * AppColor / AppSize 是静态 getter，ArkTS 追踪不到它们内部读的 AppStorage，
+   * 所以「没有依赖被追踪状态」的属性表达式切主题时不会重新求值。
+   * 只有整棵子树重建，静态 getter 才会拿到新值。
+   */
+
   build() {
-    Column() {
-      // ---------- 顶部标题 ----------
+    if (this.displayMode === ThemeMode.NIGHT && this.careMode) {
+      this.pageRoot();
+    } else if (this.displayMode === ThemeMode.NIGHT) {
+      this.pageRoot();
+    } else if (this.careMode) {
+      this.pageRoot();
+    } else {
+      this.pageRoot();
+    }
+  }
+
+  @Builder
+  pageRoot() {
       Column() {
-        Row() {
-          Column() {
-            Text('守颐')
-              .fontSize(24)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(AppColor.CARD)
-            Text('居家安全 · 实时守护')
-              .fontSize(AppSize.SMALL_FONT)
-              .fontColor('rgba(255,255,255,0.7)')
-              .margin({ top: 4 })
-          }
-          .alignItems(HorizontalAlign.Start)
-          .layoutWeight(1)
-
-          if (this.pendingCount > 0) {
-            Column() {
-              Text(`${this.pendingCount}`)
-                .fontSize(16)
-                .fontWeight(FontWeight.Bold)
-                .fontColor(AppColor.CARD)
-              Text('待处置')
-                .fontSize(10)
-                .fontColor('rgba(255,255,255,0.8)')
-            }
-            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-            .backgroundColor(AppColor.DANGER)
-            .borderRadius(AppSize.SMALL_RADIUS)
-          }
-        }
-        .width('100%')
-      }
-      .width('100%')
-      .alignItems(HorizontalAlign.Start)
-      .padding(20)
-      .backgroundColor(AppColor.PRIMARY)
-      .borderRadius({ bottomLeft: 16, bottomRight: 16 })
-
-      // ---------- 离线提示 ----------
-      if (!this.online) {
-        Row() {
-          Text('当前离线 · 展示的是最近一次同步的数据，设备端本地守护不受影响')
-            .fontSize(AppSize.SMALL_FONT)
-            .fontColor(AppColor.TEXT)
-        }
-        .width('100%')
-        .padding(10)
-        .backgroundColor('rgba(224,138,0,0.14)')
-      }
-
-      // ---------- 推送横幅 ----------
-      if (this.pushBanner !== undefined) {
-        Row() {
-          Column() {
-            Text(CareService.buildPushTitle(this.pushBanner))
-              .fontSize(AppSize.CAPTION_FONT)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(AppColor.CARD)
-            Text(this.pushBanner.body)
-              .fontSize(AppSize.SMALL_FONT)
-              .fontColor('rgba(255,255,255,0.85)')
-              .margin({ top: 4 })
-              .maxLines(2)
-          }
-          .alignItems(HorizontalAlign.Start)
-          .layoutWeight(1)
-
-          Text('关闭')
-            .fontSize(AppSize.SMALL_FONT)
-            .fontColor('rgba(255,255,255,0.8)')
-            .onClick(() => {
-              this.pushBanner = undefined;
-            })
-        }
-        .width('100%')
-        .padding(14)
-        .backgroundColor(AppColor.levelColor(this.pushBanner.level))
-      }
-
-      Scroll() {
+        // ---------- 顶部标题 ----------
         Column() {
-          // ---------- 设备状态卡 ----------
-          if (this.device !== undefined) {
+          Row() {
             Column() {
-              Row() {
-                Column() {
-                  Text(this.device.deviceName)
-                    .fontSize(AppSize.SUBTITLE_FONT)
-                    .fontWeight(FontWeight.Bold)
-                    .fontColor(AppColor.TEXT)
-                  // 固件版本属于底层开发信息，家属首页不需要看，已移至
-                  // 「我的 → 设置 → 设备信息」。这里只保留家属真正会看的网络类型。
-                  Text(this.networkLabel())
-                    .fontSize(AppSize.SMALL_FONT)
-                    .fontColor(AppColor.TEXT_3)
-                    .margin({ top: 4 })
-                }
-                .alignItems(HorizontalAlign.Start)
-                .layoutWeight(1)
-
-                Row() {
-                  Row()
-                    .width(8)
-                    .height(8)
-                    .borderRadius(4)
-                    .backgroundColor(this.device.online ? AppColor.SUCCESS : AppColor.DANGER)
-                  Text(this.device.online ? '在线' : '离线')
-                    .fontSize(AppSize.SMALL_FONT)
-                    .fontColor(this.device.online ? AppColor.SUCCESS : AppColor.DANGER)
-                    .margin({ left: 6 })
-                }
-              }
-              .width('100%')
-
-              // ---------- 心率 ----------
-              // 家属最关心的生命体征，单独成条并置于设备指标之上。
-              // 有读数展示 "76 次/分钟"；信号断开或暂未采集时展示
-              // "-- 次/分钟"（统一由 HeartRateConst.display 生成），不留空。
-              Row() {
-                Text('♥')
-                  .fontSize(14)
-                  .fontColor(this.heartRateColor())
-                Text('心率')
-                  .fontSize(AppSize.SMALL_FONT)
-                  .fontColor(AppColor.TEXT_3)
-                  .margin({ left: 6 })
-                Blank()
-                Text(this.heartRateText())
-                  .fontSize(AppSize.BODY_FONT)
-                  .fontWeight(FontWeight.Bold)
-                  .fontColor(this.heartRateColor())
-              }
-              .width('100%')
-              .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-              .backgroundColor(this.heartRateBg())
-              .borderRadius(AppSize.SMALL_RADIUS)
-              .margin({ top: 12 })
-
-              Row() {
-                this.metric('电量', `${this.device.battery}%`,
-                  this.device.isLowBattery() ? AppColor.WARNING : AppColor.TEXT)
-                this.metric('信号', `${this.device.signal}/5`, AppColor.TEXT)
-                this.metric('最后心跳', DateUtil.relative(this.device.lastHeartbeat), AppColor.TEXT)
-              }
-              .width('100%')
-              .margin({ top: 14 })
+              Text('鸿星伴护')
+                .fontSize(24)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(AppColor.ON_PRIMARY)
+              Text('居家安全 · 实时守护')
+                .fontSize(AppSize.SMALL_FONT)
+                .fontColor('rgba(255,255,255,0.7)')
+                .margin({ top: 4 })
             }
-            .width('100%')
-            .padding(16)
-            .backgroundColor(AppColor.CARD)
-            .borderRadius(AppSize.CARD_RADIUS)
-            .margin({ bottom: 12 })
-          }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
 
-          // ---------- 传感器网格 ----------
-          Text('传感器状态')
-            .fontSize(AppSize.SUBTITLE_FONT)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(AppColor.TEXT)
-            .width('100%')
-            .margin({ bottom: 10 })
-
-          Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.SpaceBetween }) {
-            ForEach(this.sensors, (sensor: Sensor) => {
+            if (this.pendingCount > 0) {
               Column() {
-                SensorTile({ sensor: sensor })
+                Text(`${this.pendingCount}`)
+                  .fontSize(16)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor(AppColor.ON_PRIMARY)
+                Text('待处置')
+                  .fontSize(10)
+                  .fontColor('rgba(255,255,255,0.8)')
               }
-              .width('48%')
-              .margin({ bottom: 10 })
-              // 卡片可点：进入该传感器的详情页看长期趋势
-              .hoverEffect(HoverEffect.Highlight)
-              .stateStyles({
-                pressed: { .opacity(0.6) },
-                normal: { .opacity(1) }
-              })
-              .onClick(() => {
-                this.openSensorDetail(sensor);
-              })
-            // key 含 displayValue：读数刷新后节点要重建
-            }, (sensor: Sensor) => `${sensor.sensorId}_${sensor.displayValue}`)
+              .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+              .backgroundColor(AppColor.DANGER)
+              .borderRadius(AppSize.SMALL_RADIUS)
+            }
           }
           .width('100%')
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
+        .padding(20)
+        .backgroundColor(AppColor.HEADER_BG)
+        .borderRadius({ bottomLeft: 16, bottomRight: 16 })
 
-          // ---------- 最新告警 ----------
+        // ---------- 离线提示 ----------
+        if (!this.online) {
           Row() {
-            Text('最新预警')
+            Text('当前离线 · 展示的是最近一次同步的数据，设备端本地守护不受影响')
+              .fontSize(AppSize.SMALL_FONT)
+              .fontColor(AppColor.TEXT)
+          }
+          .width('100%')
+          .padding(10)
+          .backgroundColor('rgba(224,138,0,0.14)')
+        }
+
+        // ---------- 推送横幅 ----------
+        if (this.pushBanner !== undefined) {
+          Row() {
+            Column() {
+              Text(CareService.buildPushTitle(this.pushBanner))
+                .fontSize(AppSize.CAPTION_FONT)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(AppColor.ON_PRIMARY)
+              Text(this.pushBanner.body)
+                .fontSize(AppSize.SMALL_FONT)
+                .fontColor('rgba(255,255,255,0.85)')
+                .margin({ top: 4 })
+                .maxLines(2)
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
+
+            Text('关闭')
+              .fontSize(AppSize.SMALL_FONT)
+              .fontColor('rgba(255,255,255,0.8)')
+              .onClick(() => {
+                this.pushBanner = undefined;
+              })
+          }
+          .width('100%')
+          .padding(14)
+          .backgroundColor(AppColor.levelColor(this.pushBanner.level))
+        }
+
+        Scroll() {
+          Column() {
+            // ---------- 设备状态卡 ----------
+            if (this.device !== undefined) {
+              Column() {
+                Row() {
+                  Column() {
+                    Text(this.device.deviceName)
+                      .fontSize(AppSize.SUBTITLE_FONT)
+                      .fontWeight(FontWeight.Bold)
+                      .fontColor(AppColor.TEXT)
+                    // 固件版本属于底层开发信息，家属首页不需要看，已移至
+                    // 「我的 → 设置 → 设备信息」。这里只保留家属真正会看的网络类型。
+                    Text(this.networkLabel())
+                      .fontSize(AppSize.SMALL_FONT)
+                      .fontColor(AppColor.TEXT_3)
+                      .margin({ top: 4 })
+                  }
+                  .alignItems(HorizontalAlign.Start)
+                  .layoutWeight(1)
+
+                  Row() {
+                    Row()
+                      .width(8)
+                      .height(8)
+                      .borderRadius(4)
+                      .backgroundColor(this.device.online ? AppColor.SUCCESS : AppColor.DANGER)
+                    Text(this.device.online ? '在线' : '离线')
+                      .fontSize(AppSize.SMALL_FONT)
+                      .fontColor(this.device.online ? AppColor.SUCCESS : AppColor.DANGER)
+                      .margin({ left: 6 })
+                  }
+                }
+                .width('100%')
+
+                // ---------- 心率 ----------
+                // 家属最关心的生命体征，单独成条并置于设备指标之上。
+                // 有读数展示 "76 次/分钟"；信号断开或暂未采集时展示
+                // "-- 次/分钟"（统一由 HeartRateConst.display 生成），不留空。
+                Row() {
+                  Text('♥')
+                    .fontSize(14)
+                    .fontColor(this.heartRateColor())
+                  Text('心率')
+                    .fontSize(AppSize.SMALL_FONT)
+                    .fontColor(AppColor.TEXT_3)
+                    .margin({ left: 6 })
+                  Blank()
+                  Text(this.heartRateText())
+                    .fontSize(AppSize.BODY_FONT)
+                    .fontWeight(FontWeight.Bold)
+                    .fontColor(this.heartRateColor())
+                }
+                .width('100%')
+                .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+                .backgroundColor(this.heartRateBg())
+                .borderRadius(AppSize.SMALL_RADIUS)
+                .margin({ top: 12 })
+
+                Row() {
+                  this.metric('电量', `${this.device.battery}%`,
+                    this.device.isLowBattery() ? AppColor.WARNING : AppColor.TEXT)
+                  this.metric('信号', `${this.device.signal}/5`, AppColor.TEXT)
+                  this.metric('最后心跳', DateUtil.relative(this.device.lastHeartbeat), AppColor.TEXT)
+                }
+                .width('100%')
+                .margin({ top: 14 })
+              }
+              .width('100%')
+              .padding(16)
+              .backgroundColor(AppColor.CARD)
+              .borderRadius(AppSize.CARD_RADIUS)
+              .margin({ bottom: 12 })
+            }
+
+            // ---------- 传感器网格 ----------
+            Text('传感器状态')
               .fontSize(AppSize.SUBTITLE_FONT)
               .fontWeight(FontWeight.Bold)
               .fontColor(AppColor.TEXT)
-              .layoutWeight(1)
-            Text(`近 7 天预警：${this.alerts.length} 条`)
-              .fontSize(AppSize.SMALL_FONT)
-              .fontColor(AppColor.TEXT_3)
-          }
-          .width('100%')
-          .margin({ top: 8, bottom: 10 })
+              .width('100%')
+              .margin({ bottom: 10 })
 
-          if (this.alerts.length === 0) {
-            Column() {
-              Text('近 7 天没有预警记录')
-                .fontSize(AppSize.CAPTION_FONT)
-                .fontColor(AppColor.TEXT_3)
-              Text('设备运行正常')
-                .fontSize(AppSize.SMALL_FONT)
-                .fontColor(AppColor.TEXT_3)
-                .margin({ top: 6 })
+            Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.SpaceBetween }) {
+              ForEach(this.sensors, (sensor: Sensor) => {
+                Column() {
+                  SensorTile({ sensor: sensor })
+                }
+                .width('48%')
+                .margin({ bottom: 10 })
+                // 卡片可点：进入该传感器的详情页看长期趋势
+                .hoverEffect(HoverEffect.Highlight)
+                .stateStyles({
+                  pressed: { .opacity(0.6) },
+                  normal: { .opacity(1) }
+                })
+                .onClick(() => {
+                  this.openSensorDetail(sensor);
+                })
+              // key 含 displayValue：读数刷新后节点要重建
+              }, (sensor: Sensor) => `${sensor.sensorId}_${sensor.displayValue}`)
             }
             .width('100%')
-            .padding({ top: 30, bottom: 30 })
-            .backgroundColor(AppColor.CARD)
-            .borderRadius(AppSize.CARD_RADIUS)
-          } else {
-            ForEach(this.alerts, (alert: Alert) => {
-              AlertCard({
-                alert: alert,
-                onChanged: () => {
-                  // 卡片里一键标记已处置后重新拉列表：按钮要消失，文案要变成「已处置」
-                  this.load();
-                }
-              })
-                .margin({ bottom: 10 })
-            }, (alert: Alert) => alert.alertId)
-          }
 
-          Blank().height(20)
+            // ---------- 最新告警 ----------
+            Row() {
+              Text('最新预警')
+                .fontSize(AppSize.SUBTITLE_FONT)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(AppColor.TEXT)
+                .layoutWeight(1)
+              Text(`近 7 天预警：${this.alerts.length} 条`)
+                .fontSize(AppSize.SMALL_FONT)
+                .fontColor(AppColor.TEXT_3)
+            }
+            .width('100%')
+            .margin({ top: 8, bottom: 10 })
+
+            if (this.alerts.length === 0) {
+              Column() {
+                Text('近 7 天没有预警记录')
+                  .fontSize(AppSize.CAPTION_FONT)
+                  .fontColor(AppColor.TEXT_3)
+                Text('设备运行正常')
+                  .fontSize(AppSize.SMALL_FONT)
+                  .fontColor(AppColor.TEXT_3)
+                  .margin({ top: 6 })
+              }
+              .width('100%')
+              .padding({ top: 30, bottom: 30 })
+              .backgroundColor(AppColor.CARD)
+              .borderRadius(AppSize.CARD_RADIUS)
+            } else {
+              ForEach(this.alerts, (alert: Alert) => {
+                AlertCard({
+                  alert: alert,
+                  onChanged: () => {
+                    // 卡片里一键标记已处置后重新拉列表：按钮要消失，文案要变成「已处置」
+                    this.load();
+                  }
+                })
+                  .margin({ bottom: 10 })
+              }, (alert: Alert) => alert.alertId)
+            }
+
+            Blank().height(20)
+          }
+          .width('100%')
+          .padding(AppSize.PAGE_PADDING)
         }
-        .width('100%')
-        .padding(AppSize.PAGE_PADDING)
+        .layoutWeight(1)
+        .scrollBar(BarState.Off)
       }
-      .layoutWeight(1)
-      .scrollBar(BarState.Off)
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(AppColor.BG)
+      .width('100%')
+      .height('100%')
+      .backgroundColor(AppColor.BG)
+
   }
+
 
   @Builder
   metric(label: string, value: string, color: string) {

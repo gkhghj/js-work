@@ -3,6 +3,7 @@ import { DeviceConfig } from '../../model/Device';
 import { CareService } from '../../service/CareService';
 import { common } from '@kit.AbilityKit';
 import { AppColor, AppSize } from '../../common/constants/ThemeColors';
+import { ThemeMode, ThemeStore } from '../../common/theme/ThemeStore';
 import { AlertLevel, AlertStatus, HandleResult } from '../../common/constants/AppConstants';
 import { DateUtil } from '../../common/utils/DateUtil';
 import { Logger } from '../../common/utils/Logger';
@@ -23,6 +24,13 @@ import { Logger } from '../../common/utils/Logger';
  */
 @Component
 export struct AlertCard {
+
+  /**
+   * 订阅显示设置。@StorageProp 会在主题 / 关怀模式变化时触发本组件重渲染，
+   * 这样 ThemeStore 一改，AppColor / AppSize 的 getter 重新取值，全页同步换肤。
+   */
+  @StorageProp('displayMode') displayMode: string = 'day';
+  @StorageProp('careMode') careMode: boolean = false;
   @Prop alert: Alert;
   onOpen: (alert: Alert) => void = () => {
   };
@@ -43,112 +51,140 @@ export struct AlertCard {
     this.loadElderPhone();
   }
 
+  /**
+   * 主题签名：日间/夜间 × 关怀模式，四种组合各走一支。
+   *
+   * 每一支都调用同一个 @Builder pageRoot()。主题任一维度变化都会换分支，
+   * ArkUI 随之销毁旧子树、重建新子树 —— 这是必须的：
+   * AppColor / AppSize 是静态 getter，ArkTS 追踪不到它们内部读的 AppStorage，
+   * 所以「没有依赖被追踪状态」的属性表达式切主题时不会重新求值。
+   * 只有整棵子树重建，静态 getter 才会拿到新值。
+   */
+
   build() {
-    Row() {
-      Column() {
-        // ---------- 第一行：标题 + 等级标签 ----------
-        Row() {
-          Text(this.alert.alertTypeName)
-            .fontSize(AppSize.SUBTITLE_FONT)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.alert.isCritical() ? AppColor.DANGER : AppColor.TEXT)
-            .layoutWeight(1)
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
+    if (this.displayMode === ThemeMode.NIGHT && this.careMode) {
+      this.pageRoot();
+    } else if (this.displayMode === ThemeMode.NIGHT) {
+      this.pageRoot();
+    } else if (this.careMode) {
+      this.pageRoot();
+    } else {
+      this.pageRoot();
+    }
+  }
 
-          Text(AlertLevel.labelOf(this.alert.level))
-            .fontSize(AppSize.SMALL_FONT)
-            .fontColor(AppColor.CARD)
-            .backgroundColor(AppColor.levelColor(this.alert.level))
-            .padding({ left: 8, right: 8, top: 2, bottom: 2 })
-            .borderRadius(4)
-            .margin({ left: 8 })
-        }
-        .width('100%')
-
-        // ---------- 第二行：正文 ----------
-        Text(this.alert.description)
-          .fontSize(AppSize.CAPTION_FONT)
-          .fontColor(AppColor.TEXT_2)
-          .margin({ top: 6 })
-          .lineHeight(19)
-          .maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
-
-        // ---------- 第三行：来源 / 时间 / 处置状态 ----------
-        Row() {
-          Text(`设备来源：${this.deviceLabel()}`)
-            .fontSize(AppSize.SMALL_FONT)
-            .fontColor(AppColor.TEXT_3)
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(`；时间：${DateUtil.relative(this.alert.timestamp)}`)
-            .fontSize(AppSize.SMALL_FONT)
-            .fontColor(AppColor.TEXT_3)
-          if (this.isHandled()) {
-            Text(`；${this.statusText()}`)
-              .fontSize(AppSize.SMALL_FONT)
-              .fontColor(this.statusColor())
+  @Builder
+  pageRoot() {
+      Row() {
+        Column() {
+          // ---------- 第一行：标题 + 等级标签 ----------
+          Row() {
+            Text(this.alert.alertTypeName)
+              .fontSize(AppSize.SUBTITLE_FONT)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.alert.isCritical() ? AppColor.DANGER : AppColor.TEXT)
+              .layoutWeight(1)
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
-          }
-        }
-        .width('100%')
-        .margin({ top: 8 })
 
-        // ---------- 第四行：右下角进入详情 ----------
-        Row() {
-          Blank()
-          Text('点击查看详情 ›')
-            .fontSize(AppSize.SMALL_FONT)
-            .fontColor(AppColor.TEXT_3)
-        }
-        .width('100%')
-        .margin({ top: 8 })
-
-        // 未处置才给快捷操作；已闭环的给删除入口（两段确认，防误触）
-        if (!this.isHandled()) {
-          this.actions()
-        } else if (!this.confirmingDelete) {
-          Row() {
-            this.action('删除', false, false, () => {
-              this.confirmingDelete = true;
-            })
+            Text(AlertLevel.labelOf(this.alert.level))
+              .fontSize(AppSize.SMALL_FONT)
+              .fontColor(AppColor.ON_PRIMARY)
+              .backgroundColor(AppColor.levelColor(this.alert.level))
+              .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+              .borderRadius(4)
+              .margin({ left: 8 })
           }
           .width('100%')
-          .justifyContent(FlexAlign.End)
-          .margin({ top: 10 })
-        } else {
+
+          // ---------- 第二行：正文 ----------
+          Text(this.alert.description)
+            .fontSize(AppSize.CAPTION_FONT)
+            .fontColor(AppColor.TEXT_2)
+            .margin({ top: 6 })
+            .lineHeight(19)
+            .maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+
+          // ---------- 第三行：来源 / 时间 / 处置状态 ----------
           Row() {
-            this.action('确认删除', true, false, () => this.removeAlert())
-            this.action('取消', false, true, () => {
-              this.confirmingDelete = false;
-            })
+            Text(`设备来源：${this.deviceLabel()}`)
+              .fontSize(AppSize.SMALL_FONT)
+              .fontColor(AppColor.TEXT_3)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(`；时间：${DateUtil.relative(this.alert.timestamp)}`)
+              .fontSize(AppSize.SMALL_FONT)
+              .fontColor(AppColor.TEXT_3)
+            if (this.isHandled()) {
+              Text(`；${this.statusText()}`)
+                .fontSize(AppSize.SMALL_FONT)
+                .fontColor(this.statusColor())
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+            }
           }
           .width('100%')
-          .justifyContent(FlexAlign.End)
-          .margin({ top: 10 })
+          .margin({ top: 8 })
+
+          // ---------- 第四行：右下角进入详情 ----------
+          // 整卡可点，这行只是视觉暗示；关怀模式信息密度优先，直接收起
+          if (!ThemeStore.careOn()) {
+            Row() {
+              Blank()
+              Text('点击查看详情 ›')
+                .fontSize(AppSize.SMALL_FONT)
+                .fontColor(AppColor.TEXT_3)
+            }
+            .width('100%')
+            .margin({ top: 8 })
+          }
+
+          // 未处置才给快捷操作；已闭环的给删除入口（两段确认，防误触）
+          if (!this.isHandled()) {
+            this.actions()
+          } else if (!this.confirmingDelete) {
+            Row() {
+              this.action('删除', false, false, () => {
+                this.confirmingDelete = true;
+              })
+            }
+            .width('100%')
+            .justifyContent(FlexAlign.End)
+            .margin({ top: 10 })
+          } else {
+            Row() {
+              this.action('确认删除', true, false, () => this.removeAlert())
+              this.action('取消', false, true, () => {
+                this.confirmingDelete = false;
+              })
+            }
+            .width('100%')
+            .justifyContent(FlexAlign.End)
+            .margin({ top: 10 })
+          }
         }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start)
+        // 等级色条用左边框实现：高度自动贴合内容，不会把父容器撑开。
+        .padding({ left: 12 })
+        .border({
+          width: { left: this.alert.isCritical() ? 6 : 4 },
+          color: AppColor.levelColor(this.alert.level)
+        })
       }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-      // 等级色条用左边框实现：高度自动贴合内容，不会把父容器撑开。
-      .padding({ left: 12 })
-      .border({
-        width: { left: this.alert.isCritical() ? 6 : 4 },
-        color: AppColor.levelColor(this.alert.level)
+      .width('100%')
+      .padding({ left: 14, right: 12, top: 14, bottom: 14 })
+      .backgroundColor(this.alert.isCritical() ? AppColor.levelBg(this.alert.level) : AppColor.CARD)
+      .borderRadius(AppSize.CARD_RADIUS)
+      .border({ width: 1, color: this.alert.isCritical() ? AppColor.DANGER : AppColor.LINE })
+      .onClick(() => {
+        this.onOpen(this.alert);
       })
-    }
-    .width('100%')
-    .padding({ left: 14, right: 12, top: 14, bottom: 14 })
-    .backgroundColor(this.alert.isCritical() ? AppColor.levelBg(this.alert.level) : AppColor.CARD)
-    .borderRadius(AppSize.CARD_RADIUS)
-    .border({ width: 1, color: this.alert.isCritical() ? AppColor.DANGER : AppColor.LINE })
-    .onClick(() => {
-      this.onOpen(this.alert);
-    })
+
   }
+
 
   /** 设备来源文案。取不到设备名时给明确占位，不留空 */
   private deviceLabel(): string {
@@ -175,7 +211,7 @@ export struct AlertCard {
   action(label: string, primary: boolean, gapTop: boolean, act: () => void) {
     Text(label)
       .fontSize(AppSize.SMALL_FONT)
-      .fontColor(primary ? AppColor.CARD : AppColor.TEXT_2)
+      .fontColor(primary ? AppColor.ON_PRIMARY: AppColor.TEXT_2)
       .backgroundColor(primary ? AppColor.PRIMARY : AppColor.SURFACE)
       .padding({ left: 10, right: 10, top: 5, bottom: 5 })
       .borderRadius(6)

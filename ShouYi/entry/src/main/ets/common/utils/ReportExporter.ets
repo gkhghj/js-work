@@ -60,7 +60,7 @@ export class ReportExporter {
     const title: string = ReportExporter.titleOf(report.period);
     const lines: string[] = [];
 
-    lines.push('守颐 · 独居老人智能监护系统');
+    lines.push('鸿星伴护 · 独居老人智能监护系统');
     lines.push(`${elderName} · ${title}`);
     lines.push('');
     lines.push('──────────────────────');
@@ -145,7 +145,7 @@ export class ReportExporter {
   static buildAlertsText(alerts: Alert[], elderName: string): string {
     const lines: string[] = [];
 
-    lines.push('守颐 · 独居老人智能监护系统');
+    lines.push('鸿星伴护 · 独居老人智能监护系统');
     lines.push(`${elderName} · 预警记录`);
     lines.push('');
     lines.push('──────────────────────');
@@ -219,7 +219,7 @@ export class ReportExporter {
   static buildLogsText(logs: SafetyLogEntry[], elderName: string): string {
     const lines: string[] = [];
 
-    lines.push('守颐 · 独居老人智能监护系统');
+    lines.push('鸿星伴护 · 独居老人智能监护系统');
     lines.push(`${elderName} · 居家安全日志`);
     lines.push('');
     lines.push('──────────────────────');
